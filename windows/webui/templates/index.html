@@ -496,7 +496,8 @@
             transform: rotate(180deg);
         }
 
-        #v-scale-slider {
+        #v-scale-slider,
+        #side-scale-container .v-slider-common {
             -webkit-appearance: none;
             appearance: none;
             width: 180px;
@@ -510,7 +511,8 @@
             cursor: pointer;
         }
 
-        #v-scale-slider::-webkit-slider-thumb {
+        #v-scale-slider::-webkit-slider-thumb,
+        #side-scale-container .v-slider-common::-webkit-slider-thumb {
             -webkit-appearance: none;
             width: 16px;
             height: 16px;
@@ -585,17 +587,17 @@
         <div class="side-scale-container" id="side-scale-container">
             <span class="v-scale-label" style="margin-bottom: 80px;">SCALE</span>
             <input type="range" id="v-scale-slider" min="1" max="100" value="50">
+
+            <div style="height: 100px;"></div> <!-- Spacer -->
+
+            <span class="v-scale-label" style="margin-bottom: 80px;">LEEWAY</span>
+            <!-- Range 0-30ms, Default 15ms -->
+            <input type="range" id="leeway-slider" min="0" max="30" value="15" class="v-slider-common">
+            <span id="leeway-val"
+                style="margin-top: 20px; font-size: 0.7rem; color: #00ffcc; font-family: monospace;">15ms</span>
         </div>
 
-        <!-- Leeway Settings Panel (Visible only in Wait Mode ideally, or always accessible) -->
-        <div id="leeway-controls"
-            style="position: absolute; bottom: 20px; left: 20px; background: rgba(0,0,0,0.8); padding: 10px; border-radius: 8px; border: 1px solid #444; display: none; flex-direction: column; gap: 5px; z-index: 100;">
-            <div style="font-size: 0.8rem; color: #ccc; margin-bottom: 5px;">Practice Leeway (ms)</div>
-            <div style="display: flex; align-items: center; gap: 10px;">
-                <input type="range" id="leeway-slider" min="0" max="500" value="100" style="width: 100px;">
-                <span id="leeway-val" style="font-family: monospace; color: #00ffcc; font-size: 0.9rem;">100ms</span>
-            </div>
-        </div>
+        <!-- Start Button Overlay -->
 
         <div class="drop-zone-hint" id="drop-hint">
             Click or Drop MIDI file here
@@ -1030,12 +1032,6 @@
             isWaitMode = !isWaitMode;
             waitBtn.classList.toggle('active', isWaitMode);
 
-            // Toggle visibility of leeway controls
-            const leewayControls = document.getElementById('leeway-controls');
-            if (leewayControls) {
-                leewayControls.style.display = isWaitMode ? 'flex' : 'none';
-            }
-
             if (!isWaitMode) {
                 pendingNotes.clear();
                 // Clear user buffer too
@@ -1059,7 +1055,6 @@
         muteMidiBtn.onclick = () => {
             isMidiMuted = !isMidiMuted;
             muteMidiBtn.classList.toggle('active', isMidiMuted);
-            muteMidiBtn.innerText = isMidiMuted ? '🔈' : '🔇';
             muteMidiBtn.title = isMidiMuted ? 'Unmute MIDI File' : 'Mute MIDI File';
         };
 
