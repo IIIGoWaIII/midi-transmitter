@@ -733,6 +733,10 @@
                 updateKeyState('note_off', event.noteNumber, 0);
             } else if (event.name === 'Controller Change' && event.number === 64) {
                 updateKeyState('control_change', null, null, 64, event.value);
+            } else if (event.name === 'Set Tempo') {
+                // Handle dynamic tempo changes in the song while preserving user multiplier
+                player._baseTempo = event.data;
+                updateTempo(currentTempoPct);
             }
 
             // Loop Logic
@@ -1194,6 +1198,49 @@
                 const note = parseInt(e.target.dataset.note);
                 updateKeyState('note_off', note, 0);
                 socket.emit('ui_midi_event', { type: 'note_off', note: note, velocity: 0 });
+            }
+        });
+
+        // ---------------------------------------------------------
+        // Blender-style Infinite Scroll for Tempo
+        // ---------------------------------------------------------
+        const tempoDisplay = document.querySelector('.tempo-display');
+        let isDraggingTempo = false;
+
+        tempoDisplay.style.cursor = 'ew-resize';
+        tempoDisplay.title = "Drag left/right to adjust tempo";
+
+        tempoDisplay.addEventListener('mousedown', async (e) => {
+            isDraggingTempo = true;
+            try {
+                // Request pointer lock for infinite scrolling experience
+                await tempoDisplay.requestPointerLock();
+            } catch (err) {
+                console.warn("Pointer lock failed:", err);
+            }
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (isDraggingTempo) {
+                // Use movementX for relative motion
+                const delta = e.movementX;
+
+                // Sensitivity
+                const sensitivity = e.shiftKey ? 0.2 : 1;
+
+                let newPct = currentTempoPct + (delta * sensitivity);
+
+                // Clamp
+                newPct = Math.max(10, Math.min(400, newPct));
+
+                updateTempo(Math.round(newPct));
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isDraggingTempo) {
+                isDraggingTempo = false;
+                document.exitPointerLock();
             }
         });
     </script>
