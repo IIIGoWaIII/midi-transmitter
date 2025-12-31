@@ -413,15 +413,111 @@
             border-radius: 2px;
         }
 
-        .right-tools {
+        .progress-container {
+            flex-grow: 1;
+            height: 40px;
+            position: relative;
             display: flex;
-            gap: 5px;
+            align-items: center;
+            margin: 0;
+            padding: 0 6px;
+            box-sizing: border-box;
         }
 
-        /* Hide old panels */
-        .tempo-controls,
-        .info-panel {
-            display: none !important;
+        .loop-box {
+            position: absolute;
+            height: 30px;
+            background: rgba(255, 165, 0, 0.5);
+            pointer-events: auto;
+            z-index: 1;
+            /* Behind the progress bar thumb */
+            border-radius: 4px;
+            display: none;
+            cursor: move;
+        }
+
+        .loop-handle {
+            position: absolute;
+            width: 6px;
+            height: 30px;
+            background: #ffa500;
+            cursor: ew-resize;
+            z-index: 15;
+            /* On top for dragging */
+            border-radius: 3px;
+            transform: translateX(-50%);
+            display: none;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+
+        .loop-handle:hover {
+            background: #ffcc00;
+            box-shadow: 0 0 15px rgba(255, 165, 0, 0.8);
+        }
+
+        #progress-bar {
+            width: 100%;
+            height: 4px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: #1e2642;
+            border-radius: 2px;
+            outline: none;
+            border: none;
+            z-index: 10;
+            /* Above the loop-box */
+        }
+
+        .side-scale-container {
+            position: absolute;
+            right: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 36px;
+            /* Explicit narrow width */
+            background: rgba(21, 27, 51, 0.7);
+            padding: 20px 0;
+            border-radius: 18px;
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 250;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+        }
+
+        .v-scale-label {
+            font-size: 0.6rem;
+            color: #7a88b5;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            writing-mode: vertical-lr;
+            transform: rotate(180deg);
+        }
+
+        #v-scale-slider {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 180px;
+            /* Height when vertical */
+            height: 2px;
+            background: #252e4d;
+            outline: none;
+            transform: rotate(-90deg);
+            margin: 90px 0;
+            /* (width/2) to prevent expansion */
+            cursor: pointer;
+        }
+
+        #v-scale-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: #00ffcc;
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
         }
     </style>
 </head>
@@ -439,26 +535,15 @@
             <!-- Play/Pause -->
             <button class="bar-btn" id="play-pause-btn">▶</button>
 
-            <!-- Loop -->
-            <button class="bar-btn" id="loop-toggle-btn" title="Set Loop Points">🔄</button>
-
-            <!-- Tempo -->
-            <div class="tempo-box">
-                <button class="bar-btn" style="background:transparent; width:30px" id="tempo-minus">−</button>
-                <div class="tempo-display">
-                    <span class="tempo-pct" id="tempo-val">100%</span>
-                    <span class="tempo-bpm" id="tempo-bpm-val">120 bpm</span>
-                </div>
-                <button class="bar-btn" style="background:transparent; width:30px" id="tempo-plus">+</button>
-            </div>
-
-            <!-- Practice Mode -->
-            <button class="bar-btn" id="wait-btn" title="Wait for Piano">🎹</button>
-
             <!-- Progress -->
             <div class="progress-wrapper">
                 <span class="time-label" id="current-time">0:00</span>
-                <input type="range" id="progress-bar" min="0" max="1000" value="0">
+                <div class="progress-container" id="progress-container">
+                    <div id="loop-box" class="loop-box"></div>
+                    <div id="loop-handle-start" class="loop-handle" title="Loop Start"></div>
+                    <div id="loop-handle-end" class="loop-handle" title="Loop End"></div>
+                    <input type="range" id="progress-bar" min="0" max="1000" value="0">
+                </div>
                 <span class="time-label" id="total-time">0:00</span>
             </div>
 
@@ -474,12 +559,29 @@
                 <input type="range" id="volume-slider" min="0" max="100" value="80">
             </div>
 
+            <!-- Tempo -->
+            <div class="tempo-box">
+                <button class="bar-btn" style="background:transparent; width:30px" id="tempo-minus">−</button>
+                <div class="tempo-display">
+                    <span class="tempo-pct" id="tempo-val">100%</span>
+                    <span class="tempo-bpm" id="tempo-bpm-val">120 bpm</span>
+                </div>
+                <button class="bar-btn" style="background:transparent; width:30px" id="tempo-plus">+</button>
+            </div>
+
+            <!-- Practice Mode -->
+            <button class="bar-btn" id="wait-btn" title="Wait for Piano">🎹</button>
+
             <!-- Extra Tools -->
             <div class="right-tools">
                 <button class="bar-btn" id="settings-btn" title="Select MIDI File">📂</button>
-                <button class="bar-btn" id="fullscreen-btn"
-                    onclick="document.documentElement.requestFullscreen()">⛶</button>
             </div>
+        </div>
+
+        <!-- Vertical Scale Slider -->
+        <div class="side-scale-container" id="side-scale-container">
+            <span class="v-scale-label" style="margin-bottom: 80px;">SCALE</span>
+            <input type="range" id="v-scale-slider" min="1" max="100" value="50">
         </div>
 
         <div class="drop-zone-hint" id="drop-hint">
@@ -532,6 +634,7 @@
         let lastSeekTime = 0;
         let masterVolume = 0.8;
         let currentTempoPct = 100;
+        let visualScale = 1.0; // Multiplier for TICKS_PER_PIXEL
 
         // Config
         let TICKS_PER_PIXEL = 10; // Initial value, will be calibrated on load
@@ -581,10 +684,13 @@
         const endMIDI = 108;
         const keysMap = {};
         const progressBar = document.getElementById('progress-bar');
+        const progressContainer = document.getElementById('progress-container');
+        const loopBox = document.getElementById('loop-box');
+        const loopHandleStart = document.getElementById('loop-handle-start');
+        const loopHandleEnd = document.getElementById('loop-handle-end');
         const currentTimeEl = document.getElementById('current-time');
         const totalTimeEl = document.getElementById('total-time');
         const playPauseBtn = document.getElementById('play-pause-btn');
-        const loopBtn = document.getElementById('loop-toggle-btn');
         const waitBtn = document.getElementById('wait-btn');
         const tempoVal = document.getElementById('tempo-val');
         const tempoBpmVal = document.getElementById('tempo-bpm-val');
@@ -651,6 +757,8 @@
                 totalTimeEl.innerText = formatTime(player.getSongTime());
 
                 if (player.isPlaying()) {
+                    // Loop check logic moved to animate loop for higher precision
+                    // but we keep a fallback here
                     if (loopEndTick !== null && player.tick >= loopEndTick) {
                         player.skipToTick(loopStartTick || 0);
                         player.play();
@@ -736,25 +844,115 @@
             }
         };
 
-        let loopState = 0; // 0: None, 1: Start Set, 2: End Set
-        loopBtn.onclick = () => {
-            if (loopState === 0) {
-                loopStartTick = player.tick;
-                loopState = 1;
-                loopBtn.classList.add('active');
-                loopBtn.title = "Mark End Point";
-            } else if (loopState === 1) {
-                loopEndTick = player.tick;
-                loopState = 2;
-                loopBtn.title = "Clear Loop";
+        // Loop Drag Logic
+        let activeHandle = null;
+        let dragStartX = 0;
+        let dragStartTicks = { start: 0, end: 0 };
+
+        function updateLoopUI() {
+            if (!player || player.totalTicks <= 0) return;
+
+            const startPct = (loopStartTick === null) ? 0 : (loopStartTick / player.totalTicks) * 100;
+            const endPct = (loopEndTick === null) ? 100 : (loopEndTick / player.totalTicks) * 100;
+
+            loopHandleStart.style.display = 'block';
+            loopHandleEnd.style.display = 'block';
+            loopBox.style.display = 'block';
+
+            loopHandleStart.style.left = `${startPct}%`;
+            loopHandleEnd.style.left = `${endPct}%`;
+
+            loopBox.style.left = `${startPct}%`;
+            loopBox.style.width = `${endPct - startPct}%`;
+        }
+
+        function handleLoopDrag(e) {
+            if (!activeHandle || !player || player.totalTicks <= 0) return;
+
+            const rect = progressContainer.getBoundingClientRect();
+            // Match the 6px padding on each side
+            const innerWidth = rect.width - 12;
+
+            if (activeHandle === 'box') {
+                const deltaX = e.clientX - dragStartX;
+                const deltaTicks = (deltaX / innerWidth) * player.totalTicks;
+
+                let newStart = dragStartTicks.start + deltaTicks;
+                let newEnd = dragStartTicks.end + deltaTicks;
+
+                if (newStart < 0) {
+                    newEnd -= newStart;
+                    newStart = 0;
+                }
+                if (newEnd > player.totalTicks) {
+                    newStart -= (newEnd - player.totalTicks);
+                    newEnd = player.totalTicks;
+                }
+
+                loopStartTick = newStart;
+                loopEndTick = newEnd;
             } else {
-                loopStartTick = null;
-                loopEndTick = null;
-                loopState = 0;
-                loopBtn.classList.remove('active');
-                loopBtn.title = "Set Loop Points";
+                const x = e.clientX - rect.left - 6;
+                let pct = (x / innerWidth) * 100;
+                pct = Math.max(0, Math.min(100, pct));
+                const tick = (pct / 100) * player.totalTicks;
+
+                if (activeHandle === 'start') {
+                    loopStartTick = Math.min(tick, loopEndTick !== null ? loopEndTick - 100 : player.totalTicks);
+                } else if (activeHandle === 'end') {
+                    loopEndTick = Math.max(tick, loopStartTick !== null ? loopStartTick + 100 : 0);
+                }
             }
+
+            updateLoopUI();
+        }
+
+        loopHandleStart.onpointerdown = (e) => {
+            activeHandle = 'start';
+            e.stopPropagation();
+            e.preventDefault();
         };
+        loopHandleEnd.onpointerdown = (e) => {
+            activeHandle = 'end';
+            e.stopPropagation();
+            e.preventDefault();
+        };
+        loopBox.onpointerdown = (e) => {
+            activeHandle = 'box';
+            dragStartX = e.clientX;
+            dragStartTicks = { start: loopStartTick, end: loopEndTick };
+            e.stopPropagation();
+            e.preventDefault();
+        };
+
+        window.addEventListener('pointermove', handleLoopDrag);
+        window.addEventListener('pointerup', () => activeHandle = null);
+
+        // Vertical Scale
+        const vScaleSlider = document.getElementById('v-scale-slider');
+        // Force default value to middle on load to override browser cache
+        vScaleSlider.value = 50;
+        visualScale = 1.0;
+
+        vScaleSlider.oninput = () => {
+            // Mapping: 50 (middle) is default 1.0, 100 (top) is 2.0x, 1 (bottom) is 0.05x
+            visualScale = vScaleSlider.value / 50;
+            recalibrate();
+        };
+
+        // Initialize handles on load
+        socket.on('song_loaded', () => {
+            loopStartTick = 0;
+            loopEndTick = player.totalTicks;
+            updateLoopUI();
+        });
+
+        // Add to existing player load logic if needed
+        function onSongLoaded() {
+            loopStartTick = 0;
+            loopEndTick = player.totalTicks;
+            updateLoopUI();
+        }
 
         waitBtn.onclick = () => {
             isWaitMode = !isWaitMode;
@@ -901,6 +1099,12 @@
             document.getElementById('drop-hint').style.display = 'none';
             player._baseTempo = player.tempo;
             updateTempo(100);
+
+            // Initialize loop points to full song
+            loopStartTick = 0;
+            loopEndTick = player.totalTicks;
+            updateLoopUI();
+
             player.play();
             playPauseBtn.innerText = '⏸';
         }
@@ -911,6 +1115,13 @@
 
             if (player && player.totalTicks > 0) {
                 const currentTick = player.tick;
+
+                // High-precision Loop Check
+                if (player.isPlaying() && loopEndTick !== null && currentTick >= loopEndTick) {
+                    player.skipToTick(loopStartTick || 0);
+                    player.play();
+                    return requestAnimationFrame(animate); // Skip this frame drawing to avoid frame-skip visual
+                }
 
                 fallingNotes.forEach(n => {
                     const key = keysMap[n.note];
@@ -924,17 +1135,17 @@
                     const tickDelta = n.startTick - currentTick;
                     const durationTicks = n.endTick - n.startTick;
 
-                    const y = canvas.height - (tickDelta / TICKS_PER_PIXEL);
-                    const h = durationTicks / TICKS_PER_PIXEL;
+                    const y = canvas.height - (tickDelta / (TICKS_PER_PIXEL / visualScale));
+                    const h = durationTicks / (TICKS_PER_PIXEL / visualScale);
 
-                    if (y + h > 0 && y < canvas.height + 200) {
+                    if (y > -200 && (y - h) < canvas.height + 200) {
                         ctx.fillStyle = notes[n.note % 12].includes('#') ? '#00ccaa' : '#00ffcc';
                         ctx.globalAlpha = 0.7;
                         ctx.beginPath();
-                        ctx.roundRect(x + 2, y - h, width - 4, Math.max(2, h - 2), 4);
+                        ctx.roundRect(x + 2, y - h, width - 4, Math.max(4, h - 2), 4);
                         ctx.fill();
 
-                        if (y >= canvas.height && y - h <= canvas.height) {
+                        if (y >= canvas.height && (y - h) <= canvas.height) {
                             ctx.shadowBlur = 15;
                             ctx.shadowColor = '#00ffcc';
                             ctx.fillRect(x + 2, canvas.height - 2, width - 4, 2);
