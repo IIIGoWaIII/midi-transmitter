@@ -587,6 +587,16 @@
             <input type="range" id="v-scale-slider" min="1" max="100" value="50">
         </div>
 
+        <!-- Leeway Settings Panel (Visible only in Wait Mode ideally, or always accessible) -->
+        <div id="leeway-controls"
+            style="position: absolute; bottom: 20px; left: 20px; background: rgba(0,0,0,0.8); padding: 10px; border-radius: 8px; border: 1px solid #444; display: none; flex-direction: column; gap: 5px; z-index: 100;">
+            <div style="font-size: 0.8rem; color: #ccc; margin-bottom: 5px;">Practice Leeway (ms)</div>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="range" id="leeway-slider" min="0" max="500" value="100" style="width: 100px;">
+                <span id="leeway-val" style="font-family: monospace; color: #00ffcc; font-size: 0.9rem;">100ms</span>
+            </div>
+        </div>
+
         <div class="drop-zone-hint" id="drop-hint">
             Click or Drop MIDI file here
         </div>
@@ -636,6 +646,13 @@
         let pendingNotes = new Set();
         let isUserSeeking = false;
         let lastSeekTime = 0;
+
+        // Leeway settings for practice mode
+        let LEEWAY_MS = 100;
+        const recentUserNotes = new Map(); // note -> timestamp
+        let leewayCollecting = false;
+        let leewayTimeout = null;
+
         let masterVolume = 0.8;
         let currentTempoPct = 100;
         let visualScale = 1.0; // Multiplier for TICKS_PER_PIXEL
@@ -726,9 +743,30 @@
         player = new MidiPlayer.Player((event) => {
             if (event.name === 'Note on') {
                 if (isWaitMode && event.velocity > 0) {
-                    player.pause();
-                    playPauseBtn.innerText = '▶';
-                    pendingNotes.add(event.noteNumber);
+                    // Check if user ALREADY played this note recently (Leeway Before)
+                    const now = Date.now();
+                    const userTime = recentUserNotes.get(event.noteNumber);
+
+                    if (userTime && (now - userTime) <= LEEWAY_MS) {
+                        // Note was already played by user within leeway window
+                        recentUserNotes.delete(event.noteNumber);
+                    } else {
+                        pendingNotes.add(event.noteNumber);
+
+                        // Start or extend the leeway collection period (Leeway After / Misalignment)
+                        if (!leewayCollecting) {
+                            leewayCollecting = true;
+                            // Collect notes for LEEWAY_MS
+                            leewayTimeout = setTimeout(() => {
+                                // After leeway period, pause if there are still pending notes
+                                if (pendingNotes.size > 0 && isWaitMode) {
+                                    player.pause();
+                                    playPauseBtn.innerText = '▶';
+                                }
+                                leewayCollecting = false;
+                            }, LEEWAY_MS);
+                        }
+                    }
                 }
 
                 if (event.velocity > 0) {
@@ -991,13 +1029,32 @@
         waitBtn.onclick = () => {
             isWaitMode = !isWaitMode;
             waitBtn.classList.toggle('active', isWaitMode);
+
+            // Toggle visibility of leeway controls
+            const leewayControls = document.getElementById('leeway-controls');
+            if (leewayControls) {
+                leewayControls.style.display = isWaitMode ? 'flex' : 'none';
+            }
+
             if (!isWaitMode) {
                 pendingNotes.clear();
+                // Clear user buffer too
+                recentUserNotes.clear();
                 if (!player.isPlaying() && playPauseBtn.innerText === '⏸') {
                     player.play();
                 }
             }
         };
+
+        // Leeway Slider Logic
+        const leewaySlider = document.getElementById('leeway-slider');
+        const leewayValDisplay = document.getElementById('leeway-val');
+        if (leewaySlider) {
+            leewaySlider.addEventListener('input', (e) => {
+                LEEWAY_MS = parseInt(e.target.value);
+                leewayValDisplay.innerText = `${LEEWAY_MS}ms`;
+            });
+        }
 
         muteMidiBtn.onclick = () => {
             isMidiMuted = !isMidiMuted;
@@ -1062,11 +1119,26 @@
 
         socket.on('midi_event', (data) => {
             if (isWaitMode && data.type === 'note_on' && data.velocity > 0) {
+                const now = Date.now();
+                // 1. Check if this satisfies a pending note
                 if (pendingNotes.has(data.note)) {
                     pendingNotes.delete(data.note);
                     if (pendingNotes.size === 0) {
-                        player.play();
-                        playPauseBtn.innerText = '⏸';
+                        // If we were paused, resume
+                        if (!player.isPlaying()) {
+                            player.play();
+                            playPauseBtn.innerText = '⏸';
+                        }
+                    }
+                } else {
+                    // 2. Note not pending yet? Store it in buffer for "Leeway Before"
+                    recentUserNotes.set(data.note, now);
+
+                    // Cleanup old notes (older than LEEWAY_MS + some margin)
+                    for (const [note, time] of recentUserNotes) {
+                        if (now - time > (LEEWAY_MS + 200)) {
+                            recentUserNotes.delete(note);
+                        }
                     }
                 }
             }
