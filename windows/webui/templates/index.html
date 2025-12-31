@@ -650,6 +650,8 @@
             canvas.width = canvas.offsetWidth;
             canvas.height = canvas.offsetHeight;
             recalibrate();
+            // Update loop UI on resize since it uses pixel-based positioning
+            if (typeof updateLoopUI === 'function') updateLoopUI();
         }
         window.onresize = resize;
         resize();
@@ -856,30 +858,52 @@
         function updateLoopUI() {
             if (!player || player.totalTicks <= 0) return;
 
-            const startPct = (loopStartTick === null) ? 0 : (loopStartTick / player.totalTicks) * 100;
-            const endPct = (loopEndTick === null) ? 100 : (loopEndTick / player.totalTicks) * 100;
+            const startPct = (loopStartTick === null) ? 0 : (loopStartTick / player.totalTicks);
+            const endPct = (loopEndTick === null) ? 1 : (loopEndTick / player.totalTicks);
 
             loopHandleStart.style.display = 'block';
             loopHandleEnd.style.display = 'block';
             loopBox.style.display = 'block';
 
-            loopHandleStart.style.left = `${startPct}%`;
-            loopHandleEnd.style.left = `${endPct}%`;
+            // The progress-container has 6px padding on each side
+            // The progress bar (input range) sits inside that padding
+            // IMPORTANT: The slider thumb (12px wide) center travels from thumbRadius to (trackWidth - thumbRadius)
+            // This means the effective travel distance is (trackWidth - thumbWidth)
+            const containerRect = progressContainer.getBoundingClientRect();
+            const padding = 6;
+            const thumbWidth = 12;
+            const thumbRadius = thumbWidth / 2;
+            const trackWidth = containerRect.width - (padding * 2);
 
-            loopBox.style.left = `${startPct}%`;
-            loopBox.style.width = `${endPct - startPct}%`;
+            // The thumb center starts at thumbRadius and ends at (trackWidth - thumbRadius)
+            // So the usable range is (trackWidth - thumbWidth)
+            const usableWidth = trackWidth - thumbWidth;
+
+            // Calculate pixel positions - matching how browser positions the thumb center
+            const startPx = padding + thumbRadius + (startPct * usableWidth);
+            const endPx = padding + thumbRadius + (endPct * usableWidth);
+
+            loopHandleStart.style.left = `${startPx}px`;
+            loopHandleEnd.style.left = `${endPx}px`;
+
+            loopBox.style.left = `${startPx}px`;
+            loopBox.style.width = `${endPx - startPx}px`;
         }
 
         function handleLoopDrag(e) {
             if (!activeHandle || !player || player.totalTicks <= 0) return;
 
             const rect = progressContainer.getBoundingClientRect();
-            // Match the 6px padding on each side
-            const innerWidth = rect.width - 12;
+            // Match the positioning logic from updateLoopUI
+            const padding = 6;
+            const thumbWidth = 12;
+            const thumbRadius = thumbWidth / 2;
+            const trackWidth = rect.width - (padding * 2);
+            const usableWidth = trackWidth - thumbWidth;
 
             if (activeHandle === 'box') {
                 const deltaX = e.clientX - dragStartX;
-                const deltaTicks = (deltaX / innerWidth) * player.totalTicks;
+                const deltaTicks = (deltaX / usableWidth) * player.totalTicks;
 
                 let newStart = dragStartTicks.start + deltaTicks;
                 let newEnd = dragStartTicks.end + deltaTicks;
@@ -896,10 +920,11 @@
                 loopStartTick = newStart;
                 loopEndTick = newEnd;
             } else {
-                const x = e.clientX - rect.left - 6;
-                let pct = (x / innerWidth) * 100;
-                pct = Math.max(0, Math.min(100, pct));
-                const tick = (pct / 100) * player.totalTicks;
+                // Mouse position relative to the usable track area
+                const x = e.clientX - rect.left - padding - thumbRadius;
+                let pct = x / usableWidth;
+                pct = Math.max(0, Math.min(1, pct));
+                const tick = pct * player.totalTicks;
 
                 if (activeHandle === 'start') {
                     loopStartTick = Math.min(tick, loopEndTick !== null ? loopEndTick - 100 : player.totalTicks);
