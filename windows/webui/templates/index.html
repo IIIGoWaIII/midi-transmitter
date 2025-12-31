@@ -572,6 +572,9 @@
             <!-- Practice Mode -->
             <button class="bar-btn" id="wait-btn" title="Wait for Piano">🎹</button>
 
+            <!-- Mute MIDI File -->
+            <button class="bar-btn" id="mute-midi-btn" title="Mute MIDI File">🔇</button>
+
             <!-- Extra Tools -->
             <div class="right-tools">
                 <button class="bar-btn" id="settings-btn" title="Select MIDI File">📂</button>
@@ -629,6 +632,7 @@
         let loopStartTick = null;
         let loopEndTick = null;
         let isWaitMode = false;
+        let isMidiMuted = false;
         let pendingNotes = new Set();
         let isUserSeeking = false;
         let lastSeekTime = 0;
@@ -694,6 +698,7 @@
         const totalTimeEl = document.getElementById('total-time');
         const playPauseBtn = document.getElementById('play-pause-btn');
         const waitBtn = document.getElementById('wait-btn');
+        const muteMidiBtn = document.getElementById('mute-midi-btn');
         const tempoVal = document.getElementById('tempo-val');
         const tempoBpmVal = document.getElementById('tempo-bpm-val');
         const tempoPlus = document.getElementById('tempo-plus');
@@ -727,14 +732,14 @@
                 }
 
                 if (event.velocity > 0) {
-                    updateKeyState('note_on', event.noteNumber, event.velocity);
+                    updateKeyState('note_on', event.noteNumber, event.velocity, null, null, true);
                 } else {
-                    updateKeyState('note_off', event.noteNumber, 0);
+                    updateKeyState('note_off', event.noteNumber, 0, null, null, true);
                 }
             } else if (event.name === 'Note off') {
-                updateKeyState('note_off', event.noteNumber, 0);
+                updateKeyState('note_off', event.noteNumber, 0, null, null, true);
             } else if (event.name === 'Controller Change' && event.number === 64) {
-                updateKeyState('control_change', null, null, 64, event.value);
+                updateKeyState('control_change', null, null, 64, event.value, true);
             } else if (event.name === 'Set Tempo') {
                 // Handle dynamic tempo changes in the song while preserving user multiplier
                 player._baseTempo = event.data;
@@ -994,31 +999,44 @@
             }
         };
 
+        muteMidiBtn.onclick = () => {
+            isMidiMuted = !isMidiMuted;
+            muteMidiBtn.classList.toggle('active', isMidiMuted);
+            muteMidiBtn.innerText = isMidiMuted ? '🔈' : '🔇';
+            muteMidiBtn.title = isMidiMuted ? 'Unmute MIDI File' : 'Mute MIDI File';
+        };
+
         settingsBtn.onclick = () => midiInput.click();
 
 
         // Note Highlight Utility
-        function updateKeyState(type, note, velocity, control, value) {
+        function updateKeyState(type, note, velocity, control, value, fromMidiFile = false) {
             if (!audioReady || !piano) return;
+
+            const shouldPlaySound = !fromMidiFile || !isMidiMuted;
 
             if (type === 'note_on' && velocity > 0) {
                 if (keysMap[note]) keysMap[note].classList.add('active');
-                if (activeNotes.has(note)) activeNotes.get(note).player.stop();
-                sustainedNotes.delete(note);
-                const p = piano.play(note, audioContext.currentTime, { gain: (velocity / 127) * masterVolume });
-                activeNotes.set(note, { player: p });
+                if (shouldPlaySound) {
+                    if (activeNotes.has(note)) activeNotes.get(note).player.stop();
+                    sustainedNotes.delete(note);
+                    const p = piano.play(note, audioContext.currentTime, { gain: (velocity / 127) * masterVolume });
+                    activeNotes.set(note, { player: p });
+                }
                 noteDisplay.innerText = notes[note % 12] + (Math.floor(note / 12) - 1);
             } else if (type === 'note_off' || (type === 'note_on' && velocity === 0)) {
                 if (keysMap[note]) keysMap[note].classList.remove('active');
-                if (isSustainActive) {
-                    sustainedNotes.add(note);
-                } else if (activeNotes.has(note)) {
-                    activeNotes.get(note).player.stop();
-                    activeNotes.delete(note);
+                if (shouldPlaySound) {
+                    if (isSustainActive) {
+                        sustainedNotes.add(note);
+                    } else if (activeNotes.has(note)) {
+                        activeNotes.get(note).player.stop();
+                        activeNotes.delete(note);
+                    }
                 }
             } else if (type === 'control_change' && control === 64) {
                 isSustainActive = value >= 64;
-                if (!isSustainActive) {
+                if (!isSustainActive && shouldPlaySound) {
                     sustainedNotes.forEach(n => {
                         if (activeNotes.has(n)) {
                             activeNotes.get(n).player.stop();
