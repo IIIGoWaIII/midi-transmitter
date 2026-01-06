@@ -1328,8 +1328,19 @@
                 player.pause();
                 playPauseBtn.innerText = '▶';
             } else {
-                player.play();
-                playPauseBtn.innerText = '⏸';
+                // Add 1s breathing room if at the very start
+                if (player.tick < 10) {
+                    playPauseBtn.innerText = '⌛';
+                    playPauseBtn.disabled = true;
+                    setTimeout(() => {
+                        player.play();
+                        playPauseBtn.innerText = '⏸';
+                        playPauseBtn.disabled = false;
+                    }, 1000);
+                } else {
+                    player.play();
+                    playPauseBtn.innerText = '⏸';
+                }
             }
         };
 
@@ -1742,8 +1753,9 @@
                 renderClefOverlay();
             }
 
-            player.play();
-            playPauseBtn.innerText = '⏸';
+            // DO NOT AUTO-PLAY. Stay paused on load.
+            player.pause();
+            playPauseBtn.innerText = '▶';
         }
 
         // Animation Loop
