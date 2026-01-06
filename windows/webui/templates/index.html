@@ -1858,173 +1858,176 @@
             staffContext = staffRenderer.getContext();
             staffContext.setFont('Arial', 10);
 
-            // Group notes by measure AND tick (to handle chords)
+            // Group notes by measure
             const measureNotes = {};
-            console.log('Total falling notes:', fallingNotes.length);
-            console.log('Ticks per measure:', ticksPerMeasure);
+            const GROUPING_LEEWAY = 40; // Ticks for sloppy recording
 
             fallingNotes.forEach(note => {
                 const measureIndex = Math.floor(note.startTick / ticksPerMeasure);
                 if (!measureNotes[measureIndex]) {
-                    measureNotes[measureIndex] = { treble: {}, bass: {} };
+                    measureNotes[measureIndex] = { treble: [], bass: [] };
                 }
                 const clef = getClefForNote(note.note);
-                if (!measureNotes[measureIndex][clef][note.startTick]) {
-                    measureNotes[measureIndex][clef][note.startTick] = [];
-                }
-                measureNotes[measureIndex][clef][note.startTick].push({
+                measureNotes[measureIndex][clef].push({
                     vexNote: midiToVexNote(note.note),
-                    midiNote: note.note
+                    midiNote: note.note,
+                    startTick: note.startTick,
+                    durationTicks: note.endTick - note.startTick
                 });
             });
 
-            console.log('Measure notes grouped:', Object.keys(measureNotes).length, 'measures');
+            function getVexDuration(ticks, div) {
+                const ratio = ticks / div;
+                if (ratio >= 3.5) return 'w';
+                if (ratio >= 1.5) return 'h';
+                if (ratio >= 0.75) return 'q';
+                if (ratio >= 0.35) return '8';
+                if (ratio >= 0.15) return '16';
+                return '32';
+            }
 
             // Render measures
             for (let m = 0; m < totalMeasures; m++) {
                 const xOffset = 60 + m * STAFF_WIDTH;
-
-                // Treble stave
                 const trebleStave = new VF.Stave(xOffset, 40, STAFF_WIDTH - 10);
-                if (m === 0) {
-                    trebleStave.addClef('treble').addTimeSignature('4/4');
-                }
+                if (m === 0) trebleStave.addClef('treble').addTimeSignature('4/4');
                 trebleStave.setContext(staffContext).draw();
 
-                // Bass stave
                 const bassStave = new VF.Stave(xOffset, 200, STAFF_WIDTH - 10);
-                if (m === 0) {
-                    bassStave.addClef('bass').addTimeSignature('4/4');
-                }
+                if (m === 0) bassStave.addClef('bass').addTimeSignature('4/4');
                 bassStave.setContext(staffContext).draw();
 
-                // Connect staves with brace for first measure
                 if (m === 0) {
-                    const brace = new VF.StaveConnector(trebleStave, bassStave);
-                    brace.setType(VF.StaveConnector.type.BRACE);
-                    brace.setContext(staffContext).draw();
-
-                    const lineLeft = new VF.StaveConnector(trebleStave, bassStave);
-                    lineLeft.setType(VF.StaveConnector.type.SINGLE_LEFT);
-                    lineLeft.setContext(staffContext).draw();
+                    new VF.StaveConnector(trebleStave, bassStave).setType(VF.StaveConnector.type.BRACE).setContext(staffContext).draw();
+                    new VF.StaveConnector(trebleStave, bassStave).setType(VF.StaveConnector.type.SINGLE_LEFT).setContext(staffContext).draw();
                 }
 
-                // Get notes for this measure
-                const mNotes = measureNotes[m];
-                if (mNotes) {
+                const mData = measureNotes[m];
+                if (mData) {
                     const startTick = m * ticksPerMeasure;
                     const VEX_RESOLUTION = VF.RESOLUTION || 16384;
                     const midiDiv = player.division || 480;
-                    const vexScale = (VEX_RESOLUTION / 4) / midiDiv;
+                    // Calibrate scale: Total measure ticks mapped to VF.RESOLUTION
+                    const vexScale = VEX_RESOLUTION / ticksPerMeasure;
+                    const allVoices = [];
+                    const layerResults = [];
 
-                    function buildVoice(clef, chordsAtTicks) {
-                        const ticks = Object.keys(chordsAtTicks).sort((a, b) => parseInt(a) - parseInt(b));
-                        if (ticks.length === 0) return { voice: null, notes: [], ticks: [] };
+                    ['treble', 'bass'].forEach(clef => {
+                        const notes = mData[clef].sort((a, b) => a.startTick - b.startTick);
+                        if (notes.length === 0) return;
 
-                        const tickables = [];
-                        const stNotes = [];
-                        const stTicks = [];
-                        let currentVexPos = 0;
-
-                        ticks.forEach(t => {
-                            const tick = parseInt(t);
-                            const midiOffset = tick - startTick;
-                            const targetVexPos = Math.round(midiOffset * vexScale);
-                            const gap = targetVexPos - currentVexPos;
-
-                            if (gap > 0) {
-                                try {
-                                    const ghost = new VF.GhostNote({ duration: 'q' });
-                                    if (typeof ghost.setTicks === 'function') {
-                                        ghost.setTicks(gap);
-                                    } else if (typeof ghost.setIntrinsicTicks === 'function') {
-                                        ghost.setIntrinsicTicks(new VF.Fraction(gap, 1));
-                                    }
-                                    tickables.push(ghost);
-                                    currentVexPos += gap;
-                                } catch (e) {
-                                    console.warn('GhostNote gap error', e);
+                        // Phase 1: Fuzzy Chord Grouping (Sloppy MIDI handling)
+                        const chordGroups = [];
+                        notes.forEach(note => {
+                            let added = false;
+                            for (let g = 0; g < chordGroups.length; g++) {
+                                const first = chordGroups[g][0];
+                                // Group if same start (leeway) AND similar duration
+                                if (Math.abs(first.startTick - note.startTick) < GROUPING_LEEWAY &&
+                                    Math.abs(first.durationTicks - note.durationTicks) < GROUPING_LEEWAY * 2) {
+                                    chordGroups[g].push(note);
+                                    added = true;
+                                    break;
                                 }
                             }
+                            if (!added) chordGroups.push([note]);
+                        });
 
-                            try {
-                                const notesAtTick = chordsAtTicks[t];
-                                const keys = notesAtTick.map(n => n.vexNote);
-                                const staveNote = new VF.StaveNote({ clef: clef, keys: keys, duration: 'q' });
-                                notesAtTick.forEach((n, i) => {
-                                    if (n.vexNote.includes('#')) staveNote.addModifier(new VF.Accidental('#'), i);
-                                });
-
-                                // Visible note takes a very small slice of time
-                                const noteTicks = 10;
-                                if (typeof staveNote.setTicks === 'function') {
-                                    staveNote.setTicks(noteTicks);
-                                } else if (typeof staveNote.setIntrinsicTicks === 'function') {
-                                    staveNote.setIntrinsicTicks(new VF.Fraction(noteTicks, 1));
+                        // Phase 2: Layer Assignment (Packing)
+                        const layers = [[]];
+                        chordGroups.forEach(chord => {
+                            const chordStart = chord[0].startTick;
+                            let assigned = false;
+                            for (let l = 0; l < layers.length; l++) {
+                                const lastChord = layers[l][layers[l].length - 1];
+                                if (!lastChord) {
+                                    layers[l].push(chord);
+                                    assigned = true;
+                                    break;
                                 }
+                                // Chord starts after last one ends (with small overlap allowance)
+                                const lastEnd = lastChord[0].startTick + lastChord[0].durationTicks;
+                                if (chordStart >= lastEnd - GROUPING_LEEWAY) {
+                                    layers[l].push(chord);
+                                    assigned = true;
+                                    break;
+                                }
+                            }
+                            if (!assigned) layers.push([chord]);
+                        });
+
+                        layers.forEach(layerChords => {
+
+                            const tickables = [];
+                            const stNotes = [];
+                            const stTicks = [];
+                            let currentVexPos = 0;
+                            const SAFETY_MARGIN = 40;
+
+                            layerChords.forEach(chord => {
+                                const tick = chord[0].startTick;
+                                const midiOffset = tick - startTick;
+                                let targetVexPos = Math.round(midiOffset * vexScale);
+                                if (targetVexPos > VEX_RESOLUTION - SAFETY_MARGIN) targetVexPos = VEX_RESOLUTION - SAFETY_MARGIN;
+
+                                const gap = targetVexPos - currentVexPos;
+                                if (gap > 0) {
+                                    const ghost = new VF.GhostNote({ duration: 'b' });
+                                    if (typeof ghost.setTicks === 'function') ghost.setTicks(gap);
+                                    else if (typeof ghost.setIntrinsicTicks === 'function') ghost.setIntrinsicTicks(new VF.Fraction(gap, 1));
+                                    tickables.push(ghost);
+                                    currentVexPos += gap;
+                                }
+
+                                const avgDur = chord.reduce((sum, n) => sum + n.durationTicks, 0) / chord.length;
+                                const durString = getVexDuration(avgDur, midiDiv);
+                                const keys = chord.map(n => n.vexNote);
+                                const staveNote = new VF.StaveNote({ clef: clef, keys: keys, duration: durString });
+                                chord.forEach((n, i) => { if (n.vexNote.includes('#')) staveNote.addModifier(new VF.Accidental('#'), i); });
+
+                                const noteTicks = 10;
+                                if (typeof staveNote.setTicks === 'function') staveNote.setTicks(noteTicks);
+                                else if (typeof staveNote.setIntrinsicTicks === 'function') staveNote.setIntrinsicTicks(new VF.Fraction(noteTicks, 1));
 
                                 tickables.push(staveNote);
                                 stNotes.push(staveNote);
                                 stTicks.push(tick);
                                 currentVexPos += noteTicks;
-                            } catch (e) {
-                                console.warn('StaveNote error at tick ' + t, e);
-                            }
-                        });
-
-                        // Fill the rest of the measure
-                        const remaining = VEX_RESOLUTION - currentVexPos;
-                        if (remaining > 0) {
-                            try {
-                                const ghost = new VF.GhostNote({ duration: 'q' });
-                                if (typeof ghost.setTicks === 'function') {
-                                    ghost.setTicks(remaining);
-                                } else if (typeof ghost.setIntrinsicTicks === 'function') {
-                                    ghost.setIntrinsicTicks(new VF.Fraction(remaining, 1));
-                                }
-                                tickables.push(ghost);
-                            } catch (e) { }
-                        }
-
-                        try {
-                            const voice = new VF.Voice({ num_beats: 4, beat_value: 4 }).setStrict(false);
-                            voice.addTickables(tickables);
-                            return { voice: voice, notes: stNotes, ticks: stTicks };
-                        } catch (e) {
-                            console.error('Voice creation failed', e);
-                            return { voice: null, notes: [], ticks: [] };
-                        }
-                    }
-
-                    const trebleRes = buildVoice('treble', mNotes.treble);
-                    const bassRes = buildVoice('bass', mNotes.bass);
-
-                    const voices = [];
-                    if (trebleRes.voice) voices.push(trebleRes.voice);
-                    if (bassRes.voice) voices.push(bassRes.voice);
-
-                    if (voices.length > 0) {
-                        try {
-                            const formatter = new VF.Formatter();
-                            formatter.joinVoices(voices).format(voices, STAFF_WIDTH - 60);
-
-                            if (trebleRes.voice) trebleRes.voice.draw(staffContext, trebleStave);
-                            if (bassRes.voice) bassRes.voice.draw(staffContext, bassStave);
-
-                            // Capture positions
-                            [trebleRes, bassRes].forEach(res => {
-                                if (res.notes) {
-                                    res.notes.forEach((note, idx) => {
-                                        try {
-                                            const x = note.getAbsoluteX();
-                                            if (!isNaN(x)) noteTickMap.push({ tick: res.ticks[idx], x: x });
-                                        } catch (e) { }
-                                    });
-                                }
                             });
-                        } catch (err) {
-                            console.warn('Formatting error measure ' + m, err);
-                        }
+
+
+                            const remaining = VEX_RESOLUTION - currentVexPos;
+                            if (remaining > 0) {
+                                try {
+                                    const ghost = new VF.GhostNote({ duration: 'b' });
+                                    if (typeof ghost.setTicks === 'function') ghost.setTicks(remaining);
+                                    else if (typeof ghost.setIntrinsicTicks === 'function') ghost.setIntrinsicTicks(new VF.Fraction(remaining, 1));
+                                    tickables.push(ghost);
+                                } catch (e) { }
+                            }
+
+                            try {
+                                const voice = new VF.Voice({ num_beats: 4, beat_value: 4 }).setStrict(false);
+                                voice.addTickables(tickables);
+                                allVoices.push(voice);
+                                layerResults.push({ voice, notes: stNotes, ticks: stTicks, clef });
+                            } catch (e) { }
+                        });
+                    });
+
+                    if (allVoices.length > 0) {
+                        try {
+                            new VF.Formatter().joinVoices(allVoices).format(allVoices, STAFF_WIDTH - 60);
+                            layerResults.forEach(res => {
+                                res.voice.draw(staffContext, res.clef === 'treble' ? trebleStave : bassStave);
+                                res.notes.forEach((note, idx) => {
+                                    try {
+                                        const x = note.getAbsoluteX();
+                                        if (!isNaN(x)) noteTickMap.push({ tick: res.ticks[idx], x: x });
+                                    } catch (e) { }
+                                });
+                            });
+                        } catch (err) { console.warn('Format error', err); }
                     }
                 }
             }
