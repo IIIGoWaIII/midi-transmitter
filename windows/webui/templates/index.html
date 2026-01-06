@@ -664,7 +664,8 @@
             top: 50%;
             left: 0;
             width: 80px;
-            height: 280px;
+            height: 450px;
+            /* Match Staff SVG height */
             background: #ffffff;
             z-index: 25;
             pointer-events: none;
@@ -1987,7 +1988,7 @@
 
             const VF = Vex.Flow;
             clefRenderer = new VF.Renderer(clefOverlay, VF.Renderer.Backends.SVG);
-            clefRenderer.resize(80, 280);
+            clefRenderer.resize(80, 450); // Match Staff height
             const context = clefRenderer.getContext();
 
             const trebleStave = new VF.Stave(0, 40, 80);
