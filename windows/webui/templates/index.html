@@ -595,6 +595,11 @@
             <input type="range" id="leeway-slider" min="0" max="30" value="15" class="v-slider-common">
             <span id="leeway-val"
                 style="margin-top: 20px; font-size: 0.7rem; color: #00ffcc; font-family: monospace;">15ms</span>
+
+            <!-- Debug Pending Notes -->
+            <div id="pending-notes-display"
+                style="margin-top: 40px; font-size: 0.8rem; color: #ff5555; text-align: center; font-family: monospace; writing-mode: vertical-lr; transform: rotate(180deg);">
+            </div>
         </div>
 
         <!-- Start Button Overlay -->
@@ -649,11 +654,23 @@
         let isUserSeeking = false;
         let lastSeekTime = 0;
 
+        const pendingNotesDisplay = document.getElementById('pending-notes-display');
+
         // Leeway settings for practice mode
         let LEEWAY_MS = 100;
         const recentUserNotes = new Map(); // note -> timestamp
         let leewayCollecting = false;
         let leewayTimeout = null;
+
+        function updatePendingDisplay() {
+            if (!pendingNotesDisplay) return;
+            if (pendingNotes.size === 0) {
+                pendingNotesDisplay.innerText = '';
+                return;
+            }
+            const names = Array.from(pendingNotes).map(n => notes[n % 12] + (Math.floor(n / 12) - 1));
+            pendingNotesDisplay.innerText = 'WAIT: ' + names.join(', ');
+        }
 
         let masterVolume = 0.8;
         let currentTempoPct = 100;
@@ -743,54 +760,60 @@
 
         // MIDI Player Setup
         player = new MidiPlayer.Player((event) => {
-            if (event.name === 'Note on') {
-                if (isWaitMode && event.velocity > 0) {
-                    // Check if user ALREADY played this note recently (Leeway Before)
-                    const now = Date.now();
-                    const userTime = recentUserNotes.get(event.noteNumber);
+            try {
+                if (event.name === 'Note on') {
+                    // Ignore out-of-range notes for Wait Mode (user can't play them)
+                    const isPlayable = event.noteNumber >= startMIDI && event.noteNumber <= endMIDI;
 
-                    if (userTime && (now - userTime) <= LEEWAY_MS) {
-                        // Note was already played by user within leeway window
-                        recentUserNotes.delete(event.noteNumber);
-                    } else {
-                        pendingNotes.add(event.noteNumber);
+                    if (isWaitMode && event.velocity > 0 && isPlayable) {
+                        // Check if user ALREADY played this note recently (Leeway Before)
+                        const now = Date.now();
+                        const userTime = recentUserNotes.get(event.noteNumber);
 
-                        // Start or extend the leeway collection period (Leeway After / Misalignment)
-                        if (!leewayCollecting) {
-                            leewayCollecting = true;
-                            // Collect notes for LEEWAY_MS
-                            leewayTimeout = setTimeout(() => {
-                                // After leeway period, pause if there are still pending notes
-                                if (pendingNotes.size > 0 && isWaitMode) {
-                                    player.pause();
-                                    playPauseBtn.innerText = '▶';
-                                }
-                                leewayCollecting = false;
-                            }, LEEWAY_MS);
+                        if (userTime && (now - userTime) <= LEEWAY_MS) {
+                            // Note was already played by user within leeway window
+                            recentUserNotes.delete(event.noteNumber);
+                        } else {
+                            pendingNotes.add(event.noteNumber);
+                            updatePendingDisplay();
+                            // Pause IMMEDIATELY to prevent drift
+                            if (isWaitMode) {
+                                player.pause();
+                                playPauseBtn.innerText = '▶';
+                            }
                         }
                     }
-                }
-
-                if (event.velocity > 0) {
-                    updateKeyState('note_on', event.noteNumber, event.velocity, null, null, true);
-                } else {
+                    if (event.velocity > 0) {
+                        updateKeyState('note_on', event.noteNumber, event.velocity, null, null, true);
+                    } else {
+                        updateKeyState('note_off', event.noteNumber, 0, null, null, true);
+                    }
+                } else if (event.name === 'Note off') {
                     updateKeyState('note_off', event.noteNumber, 0, null, null, true);
+                } else if (event.name === 'Controller Change' && event.number === 64) {
+                    updateKeyState('control_change', null, null, 64, event.value, true);
+                } else if (event.name === 'Set Tempo') {
+                    // Handle dynamic tempo changes in the song while preserving user multiplier
+                    player._baseTempo = event.data;
+                    updateTempo(currentTempoPct);
                 }
-            } else if (event.name === 'Note off') {
-                updateKeyState('note_off', event.noteNumber, 0, null, null, true);
-            } else if (event.name === 'Controller Change' && event.number === 64) {
-                updateKeyState('control_change', null, null, 64, event.value, true);
-            } else if (event.name === 'Set Tempo') {
-                // Handle dynamic tempo changes in the song while preserving user multiplier
-                player._baseTempo = event.data;
-                updateTempo(currentTempoPct);
-            }
 
-            // Loop Logic
-            if (loopEndTick !== null && player.tick >= loopEndTick) {
+                // Loop Logic
+                if (loopEndTick !== null && player.tick >= loopEndTick) {
+                    console.log(`Player Event Loop Trigger: Tick ${player.tick} >= ${loopEndTick}`);
+                    player.skipToTick(loopStartTick || 0);
+                    player.play();
+                    playPauseBtn.innerText = '⏸';
+                }
+            } catch (err) { console.error("Player Event Error:", err, event); }
+        });
+
+        player.on('endOfFile', () => {
+            console.log('End of File reached.');
+            // Ensure we loop if needed, even if we missed the tick check
+            if (loopEndTick !== null) {
                 player.skipToTick(loopStartTick || 0);
                 player.play();
-                playPauseBtn.innerText = '⏸';
             }
         });
 
@@ -811,8 +834,27 @@
                     // Loop check logic moved to animate loop for higher precision
                     // but we keep a fallback here
                     if (loopEndTick !== null && player.tick >= loopEndTick) {
+                        // Only loop if loopEndTick is valid
+                        console.log(`Loop Triggered at ${player.tick} (End: ${loopEndTick})`);
                         player.skipToTick(loopStartTick || 0);
                         player.play();
+                    }
+
+                    // Watchdog: If playing but tick stuck > 2s? 
+                    // (Requires tracking last tick)
+                    if (!player._lastTickCheckTime) player._lastTickCheckTime = now;
+                    if (!player._lastTickValue) player._lastTickValue = player.tick;
+
+                    if (now - player._lastTickCheckTime > 2000) {
+                        if (player.isPlaying() && player.tick === player._lastTickValue && !isWaitMode && !isUserSeeking) {
+                            console.warn("Watchdog: Playback appears stuck. Attempting resume.");
+                            try {
+                                if (audioContext.state === 'suspended') audioContext.resume();
+                                player.play();
+                            } catch (e) { console.error("Watchdog Resume Failed", e); }
+                        }
+                        player._lastTickCheckTime = now;
+                        player._lastTickValue = player.tick;
                     }
                 }
             }
@@ -872,6 +914,7 @@
                 player.skipToTick(tick);
                 player.tick = tick;
                 pendingNotes.clear();
+                updatePendingDisplay();
                 currentTimeEl.innerText = formatTime(tick * (player.getSongTime() / player.totalTicks));
             }
         });
@@ -1034,6 +1077,7 @@
 
             if (!isWaitMode) {
                 pendingNotes.clear();
+                updatePendingDisplay();
                 // Clear user buffer too
                 recentUserNotes.clear();
                 if (!player.isPlaying() && playPauseBtn.innerText === '⏸') {
@@ -1061,42 +1105,69 @@
         settingsBtn.onclick = () => midiInput.click();
 
 
+        // Global Error Handler
+        window.onerror = function (msg, url, lineNo, columnNo, error) {
+            const errorDiv = document.createElement('div');
+            errorDiv.style.position = 'fixed';
+            errorDiv.style.bottom = '10px';
+            errorDiv.style.right = '10px';
+            errorDiv.style.background = 'rgba(255, 0, 0, 0.8)';
+            errorDiv.style.color = 'white';
+            errorDiv.style.padding = '10px';
+            errorDiv.style.borderRadius = '5px';
+            errorDiv.style.zIndex = '10000';
+            errorDiv.innerText = `Error: ${msg} (Line ${lineNo})`;
+            document.body.appendChild(errorDiv);
+            console.error('Global Error:', error);
+            return false;
+        };
+
+        window.onunhandledrejection = function (event) {
+            console.error("Unhandled Promise Rejection:", event.reason);
+        };
+
         // Note Highlight Utility
         function updateKeyState(type, note, velocity, control, value, fromMidiFile = false) {
-            if (!audioReady || !piano) return;
+            try {
+                if (!audioReady || !piano) return;
 
-            const shouldPlaySound = !fromMidiFile || !isMidiMuted;
+                const shouldPlaySound = !fromMidiFile || !isMidiMuted;
 
-            if (type === 'note_on' && velocity > 0) {
-                if (keysMap[note]) keysMap[note].classList.add('active');
-                if (shouldPlaySound) {
-                    if (activeNotes.has(note)) activeNotes.get(note).player.stop();
-                    sustainedNotes.delete(note);
-                    const p = piano.play(note, audioContext.currentTime, { gain: (velocity / 127) * masterVolume });
-                    activeNotes.set(note, { player: p });
-                }
-                noteDisplay.innerText = notes[note % 12] + (Math.floor(note / 12) - 1);
-            } else if (type === 'note_off' || (type === 'note_on' && velocity === 0)) {
-                if (keysMap[note]) keysMap[note].classList.remove('active');
-                if (shouldPlaySound) {
-                    if (isSustainActive) {
-                        sustainedNotes.add(note);
-                    } else if (activeNotes.has(note)) {
-                        activeNotes.get(note).player.stop();
-                        activeNotes.delete(note);
+                if (type === 'note_on' && velocity > 0) {
+                    if (keysMap[note]) keysMap[note].classList.add('active');
+                    if (shouldPlaySound) {
+                        if (activeNotes.has(note)) activeNotes.get(note).player.stop();
+                        sustainedNotes.delete(note);
+                        const p = piano.play(note, audioContext.currentTime, { gain: (velocity / 127) * masterVolume });
+                        activeNotes.set(note, { player: p });
+                    }
+                    if (note >= 0 && note < notes.length * 12) {
+                        noteDisplay.innerText = notes[note % 12] + (Math.floor(note / 12) - 1);
+                    }
+                } else if (type === 'note_off' || (type === 'note_on' && velocity === 0)) {
+                    if (keysMap[note]) keysMap[note].classList.remove('active');
+                    if (shouldPlaySound) {
+                        if (isSustainActive) {
+                            sustainedNotes.add(note);
+                        } else if (activeNotes.has(note)) {
+                            activeNotes.get(note).player.stop();
+                            activeNotes.delete(note);
+                        }
+                    }
+                } else if (type === 'control_change' && control === 64) {
+                    isSustainActive = value >= 64;
+                    if (!isSustainActive && shouldPlaySound) {
+                        sustainedNotes.forEach(n => {
+                            if (activeNotes.has(n)) {
+                                activeNotes.get(n).player.stop();
+                                activeNotes.delete(n);
+                            }
+                        });
+                        sustainedNotes.clear();
                     }
                 }
-            } else if (type === 'control_change' && control === 64) {
-                isSustainActive = value >= 64;
-                if (!isSustainActive && shouldPlaySound) {
-                    sustainedNotes.forEach(n => {
-                        if (activeNotes.has(n)) {
-                            activeNotes.get(n).player.stop();
-                            activeNotes.delete(n);
-                        }
-                    });
-                    sustainedNotes.clear();
-                }
+            } catch (err) {
+                console.warn(`Error in updateKeyState: ${err.message}`, { type, note });
             }
         }
 
@@ -1118,6 +1189,7 @@
                 // 1. Check if this satisfies a pending note
                 if (pendingNotes.has(data.note)) {
                     pendingNotes.delete(data.note);
+                    updatePendingDisplay();
                     if (pendingNotes.size === 0) {
                         // If we were paused, resume
                         if (!player.isPlaying()) {
@@ -1187,6 +1259,21 @@
             // Calibrate Ticks per Pixel (approximate 2 seconds view)
             recalibrate();
 
+            // Manual calc of max ticks to verify
+            let maxTick = 0;
+            player.events.forEach(track => {
+                track.forEach(event => {
+                    if (event.tick > maxTick) maxTick = event.tick;
+                });
+            });
+            console.log(`MIDI Loaded. Player Ticks: ${player.totalTicks}, Manual Max: ${maxTick}`);
+
+            // Fix potential truncation
+            if (maxTick > player.totalTicks) {
+                console.warn("Correcting totalTicks!");
+                player.totalTicks = maxTick;
+            }
+
             // Extract notes for visualization
             fallingNotes = [];
 
@@ -1217,6 +1304,9 @@
             // Initialize loop points to full song
             loopStartTick = 0;
             loopEndTick = player.totalTicks;
+
+            console.log(`MIDI Loaded. Total Ticks: ${player.totalTicks}`);
+
             updateLoopUI();
 
             player.play();
@@ -1225,51 +1315,57 @@
 
         // Animation Loop
         function animate() {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-            if (player && player.totalTicks > 0) {
-                const currentTick = player.tick;
-
-                // High-precision Loop Check
-                if (player.isPlaying() && loopEndTick !== null && currentTick >= loopEndTick) {
-                    player.skipToTick(loopStartTick || 0);
-                    player.play();
-                    return requestAnimationFrame(animate); // Skip this frame drawing to avoid frame-skip visual
-                }
-
-                fallingNotes.forEach(n => {
-                    const key = keysMap[n.note];
-                    if (!key) return;
-
-                    const rect = key.getBoundingClientRect();
-                    const canvasRect = canvas.getBoundingClientRect();
-                    const x = rect.left - canvasRect.left;
-                    const width = rect.width;
-
-                    const tickDelta = n.startTick - currentTick;
-                    const durationTicks = n.endTick - n.startTick;
-
-                    const y = canvas.height - (tickDelta / (TICKS_PER_PIXEL / visualScale));
-                    const h = durationTicks / (TICKS_PER_PIXEL / visualScale);
-
-                    if (y > -200 && (y - h) < canvas.height + 200) {
-                        ctx.fillStyle = notes[n.note % 12].includes('#') ? '#00ccaa' : '#00ffcc';
-                        ctx.globalAlpha = 0.7;
-                        ctx.beginPath();
-                        ctx.roundRect(x + 2, y - h, width - 4, Math.max(4, h - 2), 4);
-                        ctx.fill();
-
-                        if (y >= canvas.height && (y - h) <= canvas.height) {
-                            ctx.shadowBlur = 15;
-                            ctx.shadowColor = '#00ffcc';
-                            ctx.fillRect(x + 2, canvas.height - 2, width - 4, 2);
-                            ctx.shadowBlur = 0;
-                        }
-                    }
-                });
-            }
-
+            // Request next frame first to keep loop running even if render fails
             requestAnimationFrame(animate);
+
+            try {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                if (player && player.totalTicks > 0) {
+                    const currentTick = player.tick;
+
+                    // High-precision Loop Check
+                    if (player.isPlaying() && loopEndTick !== null && currentTick >= loopEndTick) {
+                        // console.log(`Animate Loop Trigger: Tick ${currentTick} >= ${loopEndTick}`);
+                        player.skipToTick(loopStartTick || 0);
+                        player.play();
+                        return; // Skip this frame drawing
+                    }
+
+                    fallingNotes.forEach(n => {
+                        const key = keysMap[n.note];
+                        if (!key) return;
+
+                        const rect = key.getBoundingClientRect();
+                        const canvasRect = canvas.getBoundingClientRect();
+                        const x = rect.left - canvasRect.left;
+                        const width = rect.width;
+
+                        const tickDelta = n.startTick - currentTick;
+                        const durationTicks = n.endTick - n.startTick;
+
+                        const y = canvas.height - (tickDelta / (TICKS_PER_PIXEL / visualScale));
+                        const h = durationTicks / (TICKS_PER_PIXEL / visualScale);
+
+                        if (y > -200 && (y - h) < canvas.height + 200) {
+                            ctx.fillStyle = notes[n.note % 12].includes('#') ? '#00ccaa' : '#00ffcc';
+                            ctx.globalAlpha = 0.7;
+                            ctx.beginPath();
+                            ctx.roundRect(x + 2, y - h, width - 4, Math.max(4, h - 2), 4);
+                            ctx.fill();
+
+                            if (y >= canvas.height && (y - h) <= canvas.height) {
+                                ctx.shadowBlur = 15;
+                                ctx.shadowColor = '#00ffcc';
+                                ctx.fillRect(x + 2, canvas.height - 2, width - 4, 2);
+                                ctx.shadowBlur = 0;
+                            }
+                        }
+                    });
+                }
+            } catch (err) {
+                console.warn("Animate Error:", err);
+            }
         }
         animate();
 
@@ -1351,6 +1447,22 @@
             if (isDraggingTempo) {
                 isDraggingTempo = false;
                 document.exitPointerLock();
+            }
+        });
+
+        // Spacebar to Resume/Skip
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && isWaitMode) {
+                e.preventDefault();
+                if (pendingNotes.size > 0 || !player.isPlaying()) {
+                    pendingNotes.clear();
+                    updatePendingDisplay();
+                    player.play();
+                    playPauseBtn.innerText = '⏸';
+                } else {
+                    player.pause();
+                    playPauseBtn.innerText = '▶';
+                }
             }
         });
     </script>
