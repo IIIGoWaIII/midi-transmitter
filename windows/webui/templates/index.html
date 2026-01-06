@@ -2017,7 +2017,15 @@
 
                     if (allVoices.length > 0) {
                         try {
-                            new VF.Formatter().joinVoices(allVoices).format(allVoices, STAFF_WIDTH - 60);
+                            const formatter = new VF.Formatter().joinVoices(allVoices);
+                            // STAFF_WIDTH is 300. 
+                            // The first bar (m===0) has Clef + TimeSig (approx 60px). 
+                            // Every bar has a right-side margin/safety (60px).
+                            // If we use the same 240px for both, the first bar's notes are squished into less space.
+                            // We need to reduce the format width for the first bar to match the actual note area.
+                            const formatWidth = (m === 0) ? (STAFF_WIDTH - 120) : (STAFF_WIDTH - 60);
+                            formatter.format(allVoices, formatWidth);
+
                             layerResults.forEach(res => {
                                 res.voice.draw(staffContext, res.clef === 'treble' ? trebleStave : bassStave);
                                 res.notes.forEach((note, idx) => {
