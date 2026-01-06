@@ -8,6 +8,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/soundfont-player@0.12.0/dist/soundfont-player.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/midi-player-js@2.0.16/browser/midiplayer.min.js"></script>
+    <!-- VexFlow for staff notation -->
+    <script src="https://cdn.jsdelivr.net/npm/vexflow@4.2.3/build/cjs/vexflow.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -75,12 +77,25 @@
             display: flex;
             flex-direction: column;
             position: relative;
+            background: #050505;
+        }
+
+        .viz-area {
+            flex-grow: 1;
+            width: 100%;
+            position: relative;
+            overflow: hidden;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            padding-top: 80px;
+            /* Space for top-bar */
         }
 
         #visualizer-canvas {
             width: 100%;
-            flex-grow: 1;
-            min-height: 0;
+            height: 100%;
             background: transparent;
             display: block;
         }
@@ -584,6 +599,105 @@
                 opacity: 0.5;
             }
         }
+
+        #staff-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: #ffffff !important;
+            /* LIGHT MODE for staff only */
+            z-index: 5;
+            display: flex;
+            align-items: center;
+            /* Center staff vertically */
+            justify-content: flex-start;
+            overflow: hidden;
+            /* We will use JS for scrolling */
+        }
+
+        #staff-scroll-area {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            display: flex;
+            align-items: center;
+            /* Container for the SVG and loop bars */
+            will-change: transform;
+        }
+
+        #staff-container.hidden {
+            display: none;
+        }
+
+        #staff-container svg {
+            background: transparent;
+        }
+
+        /* Standard notation colors (black on white) */
+        #staff-container svg .vf-stave line,
+        #staff-container svg .vf-stave path {
+            stroke: #000 !important;
+        }
+
+        /* Playhead indicator - FIXED AT CENTER */
+        .staff-playhead {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 50%;
+            width: 3px;
+            background: #ff0000;
+            box-shadow: 0 0 10px rgba(255, 0, 0, 0.6);
+            z-index: 20;
+            pointer-events: none;
+            transform: translateX(-50%);
+            display: none;
+            /* Only show in staff mode */
+        }
+
+        /* Sticky Clef Overlay */
+        #clef-overlay {
+            position: absolute;
+            top: 50%;
+            left: 0;
+            width: 80px;
+            height: 280px;
+            background: #ffffff;
+            z-index: 25;
+            pointer-events: none;
+            border-right: 1px solid #ddd;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            transform: translateY(-50%);
+            box-shadow: 5px 0 15px rgba(0, 0, 0, 0.05);
+        }
+
+        #clef-overlay.hidden {
+            display: none;
+        }
+
+        /* Staff Loop Bars */
+        .staff-loop-bar {
+            position: absolute;
+            top: 20px;
+            bottom: 30px;
+            width: 4px;
+            background: rgba(255, 165, 0, 0.6);
+            border: 1px solid #ffaa00;
+            z-index: 15;
+            pointer-events: none;
+            border-radius: 2px;
+        }
+
+        /* View toggle active state */
+        #view-toggle-btn.staff-active {
+            background: linear-gradient(135deg, #ff8800 0%, #ff5500 100%);
+            box-shadow: 0 0 15px rgba(255, 136, 0, 0.5);
+        }
     </style>
 </head>
 
@@ -676,6 +790,9 @@
             <!-- Mute MIDI File -->
             <button class="bar-btn" id="mute-midi-btn" title="Mute MIDI File">🔇</button>
 
+            <!-- View Toggle (Falling Notes / Staff) -->
+            <button class="bar-btn" id="view-toggle-btn" title="Toggle Staff View">🎼</button>
+
             <!-- Extra Tools -->
             <div class="right-tools">
                 <button class="bar-btn" id="settings-btn" title="Select MIDI File">📂</button>
@@ -708,7 +825,26 @@
         </div>
         <input type="file" id="midi-input" accept=".mid,.midi" style="display: none;">
 
-        <canvas id="visualizer-canvas"></canvas>
+        <!-- Main Visualization Area -->
+        <div class="viz-area">
+            <canvas id="visualizer-canvas"></canvas>
+
+            <!-- Staff Notation Container -->
+            <div id="staff-container" class="hidden">
+                <div id="staff-scroll-area">
+                    <!-- SVG will be rendered here -->
+                </div>
+
+                <!-- Loop bars inside the relative container but outside the scroll-area for fixed positioning? 
+                      No, loop bars should scroll WITH the staff. -->
+                <div id="staff-loop-start" class="staff-loop-bar" style="display:none;"></div>
+                <div id="staff-loop-end" class="staff-loop-bar" style="display:none;"></div>
+            </div>
+
+            <!-- Fixed Overlay Elements -->
+            <div id="clef-overlay" class="hidden"></div>
+            <div class="staff-playhead" id="staff-playhead-v2"></div>
+        </div>
 
         <div class="keyboard-container">
             <div class="keyboard" id="keyboard">
@@ -1131,6 +1267,9 @@
 
             loopBox.style.left = `${startPx}px`;
             loopBox.style.width = `${endPx - startPx}px`;
+
+            // Sync with Staff View
+            updateStaffLoopBars();
         }
 
         function handleLoopDrag(e) {
@@ -1217,6 +1356,11 @@
             loopStartTick = 0;
             loopEndTick = player.totalTicks;
             updateLoopUI();
+            if (isStaffView) {
+                renderStaffNotation();
+                renderClefOverlay();
+                updateStaffLoopBars();
+            }
         });
 
         // Add to existing player load logic if needed
@@ -1224,6 +1368,11 @@
             loopStartTick = 0;
             loopEndTick = player.totalTicks;
             updateLoopUI();
+            if (isStaffView) {
+                renderStaffNotation();
+                renderClefOverlay();
+                updateStaffLoopBars();
+            }
         }
 
         waitBtn.onclick = () => {
@@ -1464,6 +1613,12 @@
 
             updateLoopUI();
 
+            // Re-render staff if currently in staff view
+            if (isStaffView) {
+                renderStaffNotation();
+                renderClefOverlay();
+            }
+
             player.play();
             playPauseBtn.innerText = '⏸';
         }
@@ -1481,10 +1636,9 @@
 
                     // High-precision Loop Check
                     if (player.isPlaying() && loopEndTick !== null && currentTick >= loopEndTick) {
-                        // console.log(`Animate Loop Trigger: Tick ${currentTick} >= ${loopEndTick}`);
                         player.skipToTick(loopStartTick || 0);
                         player.play();
-                        return; // Skip this frame drawing
+                        return;
                     }
 
                     fallingNotes.forEach(n => {
@@ -1517,6 +1671,11 @@
                             }
                         }
                     });
+
+                    // Smooth Staff Scrolling
+                    if (isStaffView) {
+                        updateStaffPlayhead();
+                    }
                 }
             } catch (err) {
                 console.warn("Animate Error:", err);
@@ -1620,6 +1779,320 @@
                 }
             }
         });
+
+        // ---------------------------------------------------------
+        // Staff Notation View (VexFlow)
+        // ---------------------------------------------------------
+        const staffContainer = document.getElementById('staff-container');
+        const staffScrollArea = document.getElementById('staff-scroll-area');
+        const viewToggleBtn = document.getElementById('view-toggle-btn');
+        const clefOverlay = document.getElementById('clef-overlay');
+        const staffLoopStart = document.getElementById('staff-loop-start');
+        const staffLoopEnd = document.getElementById('staff-loop-end');
+        let isStaffView = false;
+        let staffRenderer = null;
+        let staffContext = null;
+        let staffPlayhead = null;
+        let clefRenderer = null;
+        const STAFF_WIDTH = 500; // Wider measures for better spacing
+        const NOTES_PER_MEASURE = 16;
+
+        // Convert MIDI note number to VexFlow note name
+        function midiToVexNote(midiNote) {
+            const noteNames = ['c', 'c#', 'd', 'd#', 'e', 'f', 'f#', 'g', 'g#', 'a', 'a#', 'b'];
+            const octave = Math.floor(midiNote / 12) - 1;
+            const noteName = noteNames[midiNote % 12];
+            // VexFlow format: "c/4" or "c#/4"
+            return `${noteName}/${octave}`;
+        }
+
+        // Determine clef based on note (middle C = 60)
+        function getClefForNote(midiNote) {
+            return midiNote >= 60 ? 'treble' : 'bass';
+        }
+
+        // Create the staff notation view
+        function renderStaffNotation() {
+            console.log('renderStaffNotation called, fallingNotes:', fallingNotes.length);
+
+            if (!player || !fallingNotes || fallingNotes.length === 0) {
+                staffScrollArea.innerHTML = '<p style="color: #666; text-align: center; padding: 50px;">Load a MIDI file to see staff notation</p>';
+                return;
+            }
+
+            // Clear previous content
+            staffScrollArea.innerHTML = '';
+
+            // Check if VexFlow is loaded
+            if (typeof Vex === 'undefined') {
+                staffScrollArea.innerHTML = '<p style="color: #ff5555; text-align: center; padding: 50px;">VexFlow library failed to load</p>';
+                return;
+            }
+
+            const VF = Vex.Flow;
+
+            // Calculate total measures based on ticks
+            const ticksPerMeasure = player.division * 4; // 4 beats per measure
+            const totalMeasures = Math.ceil(player.totalTicks / ticksPerMeasure) + 1;
+            const totalWidth = Math.max(staffContainer.clientWidth, totalMeasures * STAFF_WIDTH + 100);
+
+            // Create SVG renderer
+            staffRenderer = new VF.Renderer(staffScrollArea, VF.Renderer.Backends.SVG);
+            staffRenderer.resize(totalWidth, 450); // Taller SVG
+            staffContext = staffRenderer.getContext();
+            staffContext.setFont('Arial', 10);
+
+            // Group notes by measure AND tick (to handle chords)
+            const measureNotes = {};
+            console.log('Total falling notes:', fallingNotes.length);
+            console.log('Ticks per measure:', ticksPerMeasure);
+
+            fallingNotes.forEach(note => {
+                const measureIndex = Math.floor(note.startTick / ticksPerMeasure);
+                if (!measureNotes[measureIndex]) {
+                    measureNotes[measureIndex] = { treble: {}, bass: {} };
+                }
+                const clef = getClefForNote(note.note);
+                if (!measureNotes[measureIndex][clef][note.startTick]) {
+                    measureNotes[measureIndex][clef][note.startTick] = [];
+                }
+                measureNotes[measureIndex][clef][note.startTick].push({
+                    vexNote: midiToVexNote(note.note),
+                    midiNote: note.note
+                });
+            });
+
+            console.log('Measure notes grouped:', Object.keys(measureNotes).length, 'measures');
+
+            // Render measures
+            for (let m = 0; m < totalMeasures; m++) {
+                const xOffset = 60 + m * STAFF_WIDTH;
+
+                // Treble stave
+                const trebleStave = new VF.Stave(xOffset, 40, STAFF_WIDTH - 10);
+                if (m === 0) {
+                    trebleStave.addClef('treble').addTimeSignature('4/4');
+                }
+                trebleStave.setContext(staffContext).draw();
+
+                // Bass stave
+                const bassStave = new VF.Stave(xOffset, 200, STAFF_WIDTH - 10);
+                if (m === 0) {
+                    bassStave.addClef('bass').addTimeSignature('4/4');
+                }
+                bassStave.setContext(staffContext).draw();
+
+                // Connect staves with brace for first measure
+                if (m === 0) {
+                    const brace = new VF.StaveConnector(trebleStave, bassStave);
+                    brace.setType(VF.StaveConnector.type.BRACE);
+                    brace.setContext(staffContext).draw();
+
+                    const lineLeft = new VF.StaveConnector(trebleStave, bassStave);
+                    lineLeft.setType(VF.StaveConnector.type.SINGLE_LEFT);
+                    lineLeft.setContext(staffContext).draw();
+                }
+
+                // Get notes for this measure
+                const mNotes = measureNotes[m];
+                if (mNotes) {
+                    // Render treble chords
+                    const trebleTicks = Object.keys(mNotes.treble).sort((a, b) => a - b);
+                    if (trebleTicks.length > 0) {
+                        try {
+                            const trebleVexNotes = trebleTicks.map(tick => {
+                                const notesAtTick = mNotes.treble[tick];
+                                const keys = notesAtTick.map(n => n.vexNote);
+                                const staveNote = new VF.StaveNote({
+                                    clef: 'treble',
+                                    keys: keys,
+                                    duration: 'q'
+                                });
+                                // Add accidentals for each key in the chord
+                                notesAtTick.forEach((n, i) => {
+                                    if (n.vexNote.includes('#')) {
+                                        staveNote.addModifier(new VF.Accidental('#'), i);
+                                    }
+                                });
+                                return staveNote;
+                            });
+
+                            const voice = new VF.Voice({ num_beats: trebleVexNotes.length, beat_value: 4 });
+                            voice.setStrict(false);
+                            voice.addTickables(trebleVexNotes);
+                            new VF.Formatter().joinVoices([voice]).format([voice], STAFF_WIDTH - 60);
+                            voice.draw(staffContext, trebleStave);
+                        } catch (e) {
+                            console.warn('Treble render error measure ' + m, e);
+                        }
+                    }
+
+                    // Render bass chords
+                    const bassTicks = Object.keys(mNotes.bass).sort((a, b) => a - b);
+                    if (bassTicks.length > 0) {
+                        try {
+                            const bassVexNotes = bassTicks.map(tick => {
+                                const notesAtTick = mNotes.bass[tick];
+                                const keys = notesAtTick.map(n => n.vexNote);
+                                const staveNote = new VF.StaveNote({
+                                    clef: 'bass',
+                                    keys: keys,
+                                    duration: 'q'
+                                });
+                                notesAtTick.forEach((n, i) => {
+                                    if (n.vexNote.includes('#')) {
+                                        staveNote.addModifier(new VF.Accidental('#'), i);
+                                    }
+                                });
+                                return staveNote;
+                            });
+
+                            const voice = new VF.Voice({ num_beats: bassVexNotes.length, beat_value: 4 });
+                            voice.setStrict(false);
+                            voice.addTickables(bassVexNotes);
+                            new VF.Formatter().joinVoices([voice]).format([voice], STAFF_WIDTH - 60);
+                            voice.draw(staffContext, bassStave);
+                        } catch (e) {
+                            console.warn('Bass render error measure ' + m, e);
+                        }
+                    }
+                }
+            }
+
+            // Refs for playhead
+            staffPlayhead = document.getElementById('staff-playhead-v2');
+            if (staffPlayhead) staffPlayhead.style.display = 'block';
+
+            // Initial loop bars update
+            updateStaffLoopBars();
+        }
+
+        // Render fixed clef overlay
+        function renderClefOverlay() {
+            if (!clefOverlay) return;
+            clefOverlay.innerHTML = '';
+
+            const VF = Vex.Flow;
+            clefRenderer = new VF.Renderer(clefOverlay, VF.Renderer.Backends.SVG);
+            clefRenderer.resize(80, 280);
+            const context = clefRenderer.getContext();
+
+            const trebleStave = new VF.Stave(0, 40, 80);
+            trebleStave.addClef('treble').addTimeSignature('4/4');
+            trebleStave.setContext(context).draw();
+
+            const bassStave = new VF.Stave(0, 200, 80);
+            bassStave.addClef('bass').addTimeSignature('4/4');
+            bassStave.setContext(context).draw();
+
+            const brace = new VF.StaveConnector(trebleStave, bassStave);
+            brace.setType(VF.StaveConnector.type.BRACE);
+            brace.setContext(context).draw();
+        }
+
+        // Update loop bars on staff
+        function updateStaffLoopBars() {
+            if (!isStaffView || !player || player.totalTicks <= 0) return;
+
+            const ticksPerMeasure = player.division * 4;
+
+            if (loopStartTick !== null) {
+                const startPos = 60 + (loopStartTick / ticksPerMeasure) * STAFF_WIDTH;
+                staffLoopStart.style.left = startPos + 'px';
+                staffLoopStart.style.display = 'block';
+                // Move with scroll area
+                staffLoopStart.style.transform = `translateX(${lastStaffScrollX}px)`;
+            } else {
+                staffLoopStart.style.display = 'none';
+            }
+
+            if (loopEndTick !== null) {
+                const endPos = 60 + (loopEndTick / ticksPerMeasure) * STAFF_WIDTH;
+                staffLoopEnd.style.left = endPos + 'px';
+                staffLoopEnd.style.display = 'block';
+                // Move with scroll area
+                staffLoopEnd.style.transform = `translateX(${lastStaffScrollX}px)`;
+            } else {
+                staffLoopEnd.style.display = 'none';
+            }
+        }
+
+        // Update playhead position and centered scroll
+        let lastStaffScrollX = 0;
+        function updateStaffPlayhead() {
+            if (!isStaffView || !player || player.totalTicks <= 0) return;
+
+            const ticksPerMeasure = player.division * 4;
+            const currentMeasure = player.tick / ticksPerMeasure;
+            const xPos = 60 + currentMeasure * STAFF_WIDTH;
+
+            // In centered mode, the playhead stays at centerX
+            const containerWidth = staffContainer.clientWidth;
+            const centerX = containerWidth / 2;
+
+            // Calculate scroll amount
+            const scrollX = centerX - xPos;
+            lastStaffScrollX = scrollX;
+
+            // Apply transform for smooth scrolling
+            staffScrollArea.style.transform = `translateX(${scrollX}px)`;
+
+            // Loop bars also need to follow the scroll
+            if (staffLoopStart) staffLoopStart.style.transform = `translateX(${scrollX}px)`;
+            if (staffLoopEnd) staffLoopEnd.style.transform = `translateX(${scrollX}px)`;
+        }
+
+        // Toggle view
+        viewToggleBtn.onclick = () => {
+            isStaffView = !isStaffView;
+
+            if (isStaffView) {
+                // Hide canvas but keep space (or hide if container handles it)
+                canvas.classList.add('hidden');
+                canvas.style.display = 'none';
+                staffContainer.classList.remove('hidden');
+                clefOverlay.classList.remove('hidden');
+                viewToggleBtn.innerText = '🎼';
+                viewToggleBtn.classList.add('staff-active');
+                viewToggleBtn.title = 'Switch to Falling Notes';
+                renderStaffNotation();
+                renderClefOverlay();
+            } else {
+                canvas.classList.remove('hidden');
+                canvas.style.display = 'block';
+                staffContainer.classList.add('hidden');
+                clefOverlay.classList.add('hidden');
+                if (staffPlayhead) staffPlayhead.style.display = 'none';
+                viewToggleBtn.innerText = '🎹';
+                viewToggleBtn.classList.remove('staff-active');
+                viewToggleBtn.title = 'Switch to Staff View';
+            }
+        };
+
+        // Update staff playhead in animation loop
+        const originalAnimate = animate;
+        function animateWithStaff() {
+            originalAnimate();
+            if (isStaffView && player && player.isPlaying()) {
+                updateStaffPlayhead();
+            }
+        }
+
+        // Override animation - add staff playhead update to main loop
+        setInterval(() => {
+            if (isStaffView && player && player.totalTicks > 0) {
+                updateStaffPlayhead();
+            }
+        }, 50);
+
+        // Re-render staff when MIDI is loaded
+        const originalLoadMIDI = loadMIDI;
+        loadMIDI = function (arrayBuffer) {
+            originalLoadMIDI(arrayBuffer);
+            if (isStaffView) {
+                setTimeout(renderStaffNotation, 100);
+            }
+        };
     </script>
 </body>
 
