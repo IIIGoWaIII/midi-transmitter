@@ -642,22 +642,6 @@
             stroke: #000 !important;
         }
 
-        /* Playhead indicator - FIXED AT CENTER */
-        .staff-playhead {
-            position: absolute;
-            top: 0;
-            bottom: 0;
-            left: 50%;
-            width: 3px;
-            background: #ff0000;
-            box-shadow: 0 0 10px rgba(255, 0, 0, 0.6);
-            z-index: 20;
-            pointer-events: none;
-            transform: translateX(-50%);
-            display: none;
-            /* Only show in staff mode */
-        }
-
         /* Sticky Clef Overlay */
         #clef-overlay {
             position: absolute;
@@ -705,6 +689,44 @@
         .staff-loop-bar.dragging {
             background: #ff8800;
             box-shadow: 0 0 20px rgba(255, 136, 0, 1);
+        }
+
+        /* 25% Orange Box between bars */
+        .staff-loop-box {
+            position: absolute;
+            top: 20px;
+            bottom: 30px;
+            background: rgba(255, 165, 0, 0.25);
+            border-top: 1px solid rgba(255, 165, 0, 0.4);
+            border-bottom: 1px solid rgba(255, 165, 0, 0.4);
+            z-index: 28;
+            cursor: grab;
+            display: none;
+            pointer-events: auto;
+        }
+
+        .staff-loop-box:active {
+            cursor: grabbing;
+            background: rgba(255, 165, 0, 0.35);
+        }
+
+        /* Playhead indicator - FIXED AT CENTER */
+        .staff-playhead {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 50%;
+            width: 3px;
+            background: #ff0000;
+            box-shadow: 0 0 10px rgba(255, 0, 0, 0.6);
+            z-index: 40;
+            /* Above loop bars */
+            pointer-events: auto;
+            /* Allow dragging */
+            cursor: ew-resize;
+            transform: translateX(-50%);
+            display: none;
+            /* Only show in staff mode */
         }
 
         /* View toggle active state */
@@ -852,8 +874,8 @@
                     <!-- SVG will be rendered here -->
                 </div>
 
-                <!-- Loop bars inside the relative container but outside the scroll-area for fixed positioning? 
-                      No, loop bars should scroll WITH the staff. -->
+                <!-- Loop bars and box inside the relative container -->
+                <div id="staff-loop-box" class="staff-loop-box"></div>
                 <div id="staff-loop-start" class="staff-loop-bar" style="display:none;"></div>
                 <div id="staff-loop-end" class="staff-loop-bar" style="display:none;"></div>
             </div>
@@ -1801,10 +1823,11 @@
         const clefOverlay = document.getElementById('clef-overlay');
         const staffLoopStart = document.getElementById('staff-loop-start');
         const staffLoopEnd = document.getElementById('staff-loop-end');
+        const staffLoopBox = document.getElementById('staff-loop-box');
         let isStaffView = false;
         let staffRenderer = null;
         let staffContext = null;
-        let staffPlayhead = null;
+        let staffPlayhead = document.getElementById('staff-playhead-v2');
         let clefRenderer = null;
         const STAFF_WIDTH = 500; // Wider measures for better spacing
         const NOTES_PER_MEASURE = 16;
@@ -2134,12 +2157,14 @@
             return 60;
         }
 
-        // Update loop bars on staff
         function updateStaffLoopBars() {
             if (!isStaffView || !player || player.totalTicks <= 0) return;
 
+            let startPos = null;
+            let endPos = null;
+
             if (loopStartTick !== null) {
-                const startPos = tickToStaffX(loopStartTick);
+                startPos = tickToStaffX(loopStartTick);
                 staffLoopStart.style.left = startPos + 'px';
                 staffLoopStart.style.display = 'block';
                 staffLoopStart.style.transform = `translateX(${lastStaffScrollX}px)`;
@@ -2148,12 +2173,21 @@
             }
 
             if (loopEndTick !== null) {
-                const endPos = tickToStaffX(loopEndTick);
+                endPos = tickToStaffX(loopEndTick);
                 staffLoopEnd.style.left = endPos + 'px';
                 staffLoopEnd.style.display = 'block';
                 staffLoopEnd.style.transform = `translateX(${lastStaffScrollX}px)`;
             } else {
                 staffLoopEnd.style.display = 'none';
+            }
+
+            if (startPos !== null && endPos !== null) {
+                staffLoopBox.style.left = startPos + 'px';
+                staffLoopBox.style.width = (endPos - startPos) + 'px';
+                staffLoopBox.style.display = 'block';
+                staffLoopBox.style.transform = `translateX(${lastStaffScrollX}px)`;
+            } else {
+                staffLoopBox.style.display = 'none';
             }
         }
 
@@ -2182,9 +2216,10 @@
             // Apply transform for smooth scrolling
             staffScrollArea.style.transform = `translateX(${scrollX}px)`;
 
-            // Loop bars also need to follow the scroll
+            // Loop bars and box also need to follow the scroll
             if (staffLoopStart) staffLoopStart.style.transform = `translateX(${scrollX}px)`;
             if (staffLoopEnd) staffLoopEnd.style.transform = `translateX(${scrollX}px)`;
+            if (staffLoopBox) staffLoopBox.style.transform = `translateX(${scrollX}px)`;
         }
 
         // Toggle view
@@ -2243,37 +2278,15 @@
         // Staff Loop Bar Dragging
         // ---------------------------------------------------------
         let staffDragHandle = null;
+        let dragStartScrollX = 0;
 
-        function screenToStaffTick(clientX) {
-            if (!player || player.totalTicks <= 0) return 0;
-
-            const ticksPerMeasure = player.division * 4;
-            const containerRect = staffContainer.getBoundingClientRect();
-
-            // Get the screen X relative to the container
-            const relativeX = clientX - containerRect.left;
-
-            // Account for our current scroll offset
-            const actualStaffX = relativeX - lastStaffScrollX;
-
-            // Convert staff X position to ticks
-            // Convert staff X position to ticks using Inverse Map Lookup
-            // Find closest interval in noteTickMap
-            // Simple approach: find closest X
-            let bestTick = 0;
-            let minDist = Infinity;
-
-            // Or better: Inverse interpolation
-            // Find segment where x is between p1.x and p2.x
-            // Since x is monotonic (mostly), we can scan
-
-            if (noteTickMap.length < 2) return 0; // fallback
+        function staffXToTick(actualStaffX) {
+            if (!noteTickMap || noteTickMap.length < 2) return 0;
 
             for (let i = 0; i < noteTickMap.length - 1; i++) {
                 const p1 = noteTickMap[i];
                 const p2 = noteTickMap[i + 1];
 
-                // Allow some slop or perfect match
                 if (actualStaffX >= p1.x && actualStaffX <= p2.x) {
                     const rangeX = p2.x - p1.x;
                     if (rangeX > 0) {
@@ -2284,11 +2297,18 @@
                 }
             }
 
-            // If out of bounds
             if (actualStaffX < noteTickMap[0].x) return 0;
             if (actualStaffX > noteTickMap[noteTickMap.length - 1].x) return player.totalTicks;
+            return 0;
+        }
 
-            return 0; // Should be covered
+        function screenToStaffTick(clientX, overrideScroll) {
+            if (!player || player.totalTicks <= 0) return 0;
+            const containerRect = staffContainer.getBoundingClientRect();
+            const scroll = (overrideScroll !== undefined) ? overrideScroll : lastStaffScrollX;
+            const relativeX = clientX - containerRect.left;
+            const actualStaffX = relativeX - scroll;
+            return staffXToTick(actualStaffX);
         }
 
         staffLoopStart.addEventListener('pointerdown', (e) => {
@@ -2307,15 +2327,73 @@
             staffLoopEnd.setPointerCapture(e.pointerId);
         });
 
-        staffContainer.addEventListener('pointermove', (e) => {
+        staffLoopBox.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            staffDragHandle = 'box';
+            dragStartX = e.clientX;
+            dragStartTicks = { start: loopStartTick, end: loopEndTick };
+            staffLoopBox.setPointerCapture(e.pointerId);
+        });
+
+        staffPlayhead.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            staffDragHandle = 'playhead';
+            dragStartScrollX = lastStaffScrollX;
+            staffPlayhead.setPointerCapture(e.pointerId);
+            startSeeking();
+        });
+
+        window.addEventListener('pointermove', (e) => {
             if (!staffDragHandle) return;
 
-            const tick = screenToStaffTick(e.clientX);
+            if (staffDragHandle === 'playhead') {
+                const tick = screenToStaffTick(e.clientX, dragStartScrollX);
+                player.skipToTick(tick);
+                player.tick = tick;
+                updateStaffPlayhead();
 
-            if (staffDragHandle === 'start') {
-                loopStartTick = Math.min(tick, loopEndTick !== null ? loopEndTick - 100 : player.totalTicks);
-            } else if (staffDragHandle === 'end') {
-                loopEndTick = Math.max(tick, loopStartTick !== null ? loopStartTick + 100 : 0);
+                // Keep progress bar in sync
+                if (player.totalTicks > 0) {
+                    progressBar.value = (tick / player.totalTicks) * 1000;
+                }
+                return;
+            }
+
+            if (staffDragHandle === 'box') {
+                const containerRect = staffContainer.getBoundingClientRect();
+                const deltaX = e.clientX - dragStartX;
+
+                // Estimate tick difference based on current view scale
+                const startTickPos = tickToStaffX(dragStartTicks.start);
+                const newStartTickPos = startTickPos + deltaX;
+                const newStartTick = screenToStaffTick(newStartTickPos + containerRect.left + lastStaffScrollX);
+
+                const deltaTicks = newStartTick - dragStartTicks.start;
+
+                let newStart = dragStartTicks.start + deltaTicks;
+                let newEnd = dragStartTicks.end + deltaTicks;
+
+                if (newStart < 0) {
+                    newEnd -= newStart;
+                    newStart = 0;
+                }
+                if (newEnd > player.totalTicks) {
+                    newStart -= (newEnd - player.totalTicks);
+                    newEnd = player.totalTicks;
+                }
+
+                loopStartTick = newStart;
+                loopEndTick = newEnd;
+            } else {
+                const tick = screenToStaffTick(e.clientX);
+
+                if (staffDragHandle === 'start') {
+                    loopStartTick = Math.min(tick, loopEndTick !== null ? loopEndTick - 100 : player.totalTicks);
+                } else if (staffDragHandle === 'end') {
+                    loopEndTick = Math.max(tick, loopStartTick !== null ? loopStartTick + 100 : 0);
+                }
             }
 
             // Sync with progress bar UI
@@ -2325,6 +2403,7 @@
 
         window.addEventListener('pointerup', (e) => {
             if (staffDragHandle) {
+                if (staffDragHandle === 'playhead') stopSeeking();
                 staffLoopStart.classList.remove('dragging');
                 staffLoopEnd.classList.remove('dragging');
                 staffDragHandle = null;
