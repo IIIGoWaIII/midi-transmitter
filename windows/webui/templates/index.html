@@ -521,6 +521,69 @@
             cursor: pointer;
             box-shadow: 0 0 10px rgba(0, 255, 204, 0.5);
         }
+
+        /* Sound Pack Selector */
+        .sound-pack-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #1e2642;
+            border-radius: 8px;
+            height: 40px;
+            padding: 0 12px;
+        }
+
+        #sound-pack-select {
+            background: #252e4d;
+            color: #fff;
+            border: 1px solid #3a4570;
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            outline: none;
+            min-width: 140px;
+            transition: all 0.2s;
+        }
+
+        #sound-pack-select:hover {
+            border-color: #00ffcc;
+            background: #303b61;
+        }
+
+        #sound-pack-select:focus {
+            border-color: #00ffcc;
+            box-shadow: 0 0 8px rgba(0, 255, 204, 0.3);
+        }
+
+        #sound-pack-select option {
+            background: #1e2642;
+            color: #fff;
+            padding: 8px;
+        }
+
+        #sound-pack-select optgroup {
+            background: #151b33;
+            color: #00ffcc;
+            font-weight: bold;
+            font-style: normal;
+        }
+
+        .sound-loading {
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+        }
     </style>
 </head>
 
@@ -561,7 +624,43 @@
                 <input type="range" id="volume-slider" min="0" max="100" value="80">
             </div>
 
+            <!-- Sound Pack -->
+            <div class="sound-pack-wrapper">
+                <span style="color: #7a88b5; font-size: 1rem;">🎵</span>
+                <select id="sound-pack-select" title="Sound Pack">
+                    <optgroup label="🎹 Piano">
+                        <option value="acoustic_grand_piano" selected>Acoustic Grand</option>
+                        <option value="bright_acoustic_piano">Bright Piano</option>
+                        <option value="honkytonk_piano">Honky Tonk</option>
+                    </optgroup>
+                    <optgroup label="⚡ Electric Piano">
+                        <option value="electric_piano_1">Electric Piano 1</option>
+                        <option value="electric_piano_2">Electric Piano 2</option>
+                        <option value="electric_grand_piano">Electric Grand</option>
+                    </optgroup>
+                    <optgroup label="🎛️ Keyboard">
+                        <option value="harpsichord">Harpsichord</option>
+                        <option value="clavinet">Clavinet</option>
+                        <option value="celesta">Celesta</option>
+                    </optgroup>
+                    <optgroup label="🎚️ Synth">
+                        <option value="pad_1_new_age">Pad (New Age)</option>
+                        <option value="pad_2_warm">Pad (Warm)</option>
+                        <option value="lead_1_square">Lead (Square)</option>
+                        <option value="lead_2_sawtooth">Lead (Sawtooth)</option>
+                    </optgroup>
+                    <optgroup label="🎉 Fun">
+                        <option value="music_box">Music Box</option>
+                        <option value="vibraphone">Vibraphone</option>
+                        <option value="marimba">Marimba</option>
+                        <option value="steel_drums">Steel Drums</option>
+                        <option value="church_organ">Church Organ</option>
+                    </optgroup>
+                </select>
+            </div>
+
             <!-- Tempo -->
+
             <div class="tempo-box">
                 <button class="bar-btn" style="background:transparent; width:30px" id="tempo-minus">−</button>
                 <div class="tempo-display">
@@ -697,12 +796,62 @@
         resize();
 
         // Initialize Piano
+        const soundPackSelect = document.getElementById('sound-pack-select');
+        const instrumentCache = new Map(); // Cache loaded instruments
+        let currentInstrumentName = 'acoustic_grand_piano';
+
+        async function loadInstrument(instrumentName) {
+            // Check cache first
+            if (instrumentCache.has(instrumentName)) {
+                return instrumentCache.get(instrumentName);
+            }
+
+            // Load new instrument
+            const instrument = await Soundfont.instrument(audioContext, instrumentName, {
+                soundfont: 'FluidR3_GM'
+            });
+            instrumentCache.set(instrumentName, instrument);
+            return instrument;
+        }
+
+        async function switchSoundPack(instrumentName) {
+            if (!audioContext) return;
+
+            // Show loading state
+            soundPackSelect.classList.add('sound-loading');
+            soundPackSelect.disabled = true;
+
+            try {
+                const newInstrument = await loadInstrument(instrumentName);
+
+                // Stop any currently playing notes from old instrument
+                activeNotes.forEach((noteData, noteNum) => {
+                    if (noteData.player && noteData.player.stop) {
+                        noteData.player.stop();
+                    }
+                });
+                activeNotes.clear();
+                sustainedNotes.clear();
+
+                piano = newInstrument;
+                currentInstrumentName = instrumentName;
+                console.log('Switched to:', instrumentName);
+            } catch (err) {
+                console.error('Failed to load instrument:', err);
+                // Revert selection on error
+                soundPackSelect.value = currentInstrumentName;
+            } finally {
+                soundPackSelect.classList.remove('sound-loading');
+                soundPackSelect.disabled = false;
+            }
+        }
+
         async function initPiano() {
             try {
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                piano = await Soundfont.instrument(audioContext, 'acoustic_grand_piano', {
-                    soundfont: 'FluidR3_GM'
-                });
+                const selectedInstrument = soundPackSelect.value || 'acoustic_grand_piano';
+                piano = await loadInstrument(selectedInstrument);
+                currentInstrumentName = selectedInstrument;
                 audioReady = true;
                 startBtn.disabled = false;
                 startBtn.innerText = 'START EXPERIENCE';
@@ -713,6 +862,12 @@
             }
         }
         initPiano();
+
+        // Sound pack change handler
+        soundPackSelect.addEventListener('change', async (e) => {
+            await switchSoundPack(e.target.value);
+        });
+
 
         startBtn.onclick = async () => {
             if (audioContext && audioContext.state === 'suspended') await audioContext.resume();
