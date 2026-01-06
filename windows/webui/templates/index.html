@@ -748,6 +748,9 @@
                 <div id="note-display"
                     style="position: absolute; top: calc(100% + 15px); left: 50%; transform: translateX(-50%); font-size: 1.5rem; font-weight: bold; color: #00ffcc; text-shadow: 0 0 10px rgba(0,255,204,0.5); pointer-events: none;">
                     -</div>
+                <div id="debug-status"
+                    style="position: absolute; top: calc(100% + 40px); left: 50%; transform: translateX(-50%); font-size: 0.6rem; color: #555; font-family: monospace; white-space: nowrap; pointer-events: none;">
+                </div>
                 <span style="color: #7a88b5; font-size: 1.2rem;">🔊</span>
                 <input type="range" id="volume-slider" min="0" max="100" value="80">
             </div>
@@ -1366,16 +1369,13 @@
         };
 
         // Initialize handles on load
-        socket.on('song_loaded', () => {
-            loopStartTick = 0;
-            loopEndTick = player.totalTicks;
-            updateLoopUI();
-            if (isStaffView) {
-                renderStaffNotation();
-                renderClefOverlay();
-                updateStaffLoopBars();
+        function resetLoopPoints() {
+            if (player && player.totalTicks > 0) {
+                loopStartTick = 0;
+                loopEndTick = player.totalTicks;
+                updateLoopUI();
             }
-        });
+        }
 
         // Add to existing player load logic if needed
         function onSongLoaded() {
@@ -1619,11 +1619,11 @@
             player._baseTempo = player.tempo;
             updateTempo(100);
 
-            // Initialize loop points to full song
+            // Correct and Initialize loop points to full song
+            if (maxTick > player.totalTicks) player.totalTicks = maxTick;
             loopStartTick = 0;
             loopEndTick = player.totalTicks;
-
-            console.log(`MIDI Loaded. Total Ticks: ${player.totalTicks}`);
+            console.log(`MIDI Initialized. Ticks: ${player.totalTicks}, Loop End: ${loopEndTick}`);
 
             updateLoopUI();
 
@@ -1687,9 +1687,7 @@
                     });
 
                     // Smooth Staff Scrolling
-                    if (isStaffView) {
-                        updateStaffPlayhead();
-                    }
+                    // updateStaffPlayhead(); // Handled by 50ms interval for better battery/perf balance
                 }
             } catch (err) {
                 console.warn("Animate Error:", err);
@@ -1810,6 +1808,7 @@
         let clefRenderer = null;
         const STAFF_WIDTH = 500; // Wider measures for better spacing
         const NOTES_PER_MEASURE = 16;
+        let noteTickMap = []; // [{ tick: number, x: number }] sorted by tick
 
         // Convert MIDI note number to VexFlow note name
         function midiToVexNote(midiNote) {
@@ -1836,6 +1835,9 @@
 
             // Clear previous content
             staffScrollArea.innerHTML = '';
+            noteTickMap = []; // Reset map
+            // Add start-point anchor
+            noteTickMap.push({ tick: 0, x: 60 });
 
             // Check if VexFlow is loaded
             if (typeof Vex === 'undefined') {
@@ -1910,64 +1912,118 @@
                 // Get notes for this measure
                 const mNotes = measureNotes[m];
                 if (mNotes) {
-                    // Render treble chords
-                    const trebleTicks = Object.keys(mNotes.treble).sort((a, b) => a - b);
-                    if (trebleTicks.length > 0) {
-                        try {
-                            const trebleVexNotes = trebleTicks.map(tick => {
-                                const notesAtTick = mNotes.treble[tick];
-                                const keys = notesAtTick.map(n => n.vexNote);
-                                const staveNote = new VF.StaveNote({
-                                    clef: 'treble',
-                                    keys: keys,
-                                    duration: 'q'
-                                });
-                                // Add accidentals for each key in the chord
-                                notesAtTick.forEach((n, i) => {
-                                    if (n.vexNote.includes('#')) {
-                                        staveNote.addModifier(new VF.Accidental('#'), i);
-                                    }
-                                });
-                                return staveNote;
-                            });
+                    const startTick = m * ticksPerMeasure;
+                    const VEX_RESOLUTION = VF.RESOLUTION || 16384;
+                    const midiDiv = player.division || 480;
+                    const vexScale = (VEX_RESOLUTION / 4) / midiDiv;
 
-                            const voice = new VF.Voice({ num_beats: trebleVexNotes.length, beat_value: 4 });
-                            voice.setStrict(false);
-                            voice.addTickables(trebleVexNotes);
-                            new VF.Formatter().joinVoices([voice]).format([voice], STAFF_WIDTH - 60);
-                            voice.draw(staffContext, trebleStave);
+                    function buildVoice(clef, chordsAtTicks) {
+                        const ticks = Object.keys(chordsAtTicks).sort((a, b) => parseInt(a) - parseInt(b));
+                        if (ticks.length === 0) return { voice: null, notes: [], ticks: [] };
+
+                        const tickables = [];
+                        const stNotes = [];
+                        const stTicks = [];
+                        let currentVexPos = 0;
+
+                        ticks.forEach(t => {
+                            const tick = parseInt(t);
+                            const midiOffset = tick - startTick;
+                            const targetVexPos = Math.round(midiOffset * vexScale);
+                            const gap = targetVexPos - currentVexPos;
+
+                            if (gap > 0) {
+                                try {
+                                    const ghost = new VF.GhostNote({ duration: 'q' });
+                                    if (typeof ghost.setTicks === 'function') {
+                                        ghost.setTicks(gap);
+                                    } else if (typeof ghost.setIntrinsicTicks === 'function') {
+                                        ghost.setIntrinsicTicks(new VF.Fraction(gap, 1));
+                                    }
+                                    tickables.push(ghost);
+                                    currentVexPos += gap;
+                                } catch (e) {
+                                    console.warn('GhostNote gap error', e);
+                                }
+                            }
+
+                            try {
+                                const notesAtTick = chordsAtTicks[t];
+                                const keys = notesAtTick.map(n => n.vexNote);
+                                const staveNote = new VF.StaveNote({ clef: clef, keys: keys, duration: 'q' });
+                                notesAtTick.forEach((n, i) => {
+                                    if (n.vexNote.includes('#')) staveNote.addModifier(new VF.Accidental('#'), i);
+                                });
+
+                                // Visible note takes a very small slice of time
+                                const noteTicks = 10;
+                                if (typeof staveNote.setTicks === 'function') {
+                                    staveNote.setTicks(noteTicks);
+                                } else if (typeof staveNote.setIntrinsicTicks === 'function') {
+                                    staveNote.setIntrinsicTicks(new VF.Fraction(noteTicks, 1));
+                                }
+
+                                tickables.push(staveNote);
+                                stNotes.push(staveNote);
+                                stTicks.push(tick);
+                                currentVexPos += noteTicks;
+                            } catch (e) {
+                                console.warn('StaveNote error at tick ' + t, e);
+                            }
+                        });
+
+                        // Fill the rest of the measure
+                        const remaining = VEX_RESOLUTION - currentVexPos;
+                        if (remaining > 0) {
+                            try {
+                                const ghost = new VF.GhostNote({ duration: 'q' });
+                                if (typeof ghost.setTicks === 'function') {
+                                    ghost.setTicks(remaining);
+                                } else if (typeof ghost.setIntrinsicTicks === 'function') {
+                                    ghost.setIntrinsicTicks(new VF.Fraction(remaining, 1));
+                                }
+                                tickables.push(ghost);
+                            } catch (e) { }
+                        }
+
+                        try {
+                            const voice = new VF.Voice({ num_beats: 4, beat_value: 4 }).setStrict(false);
+                            voice.addTickables(tickables);
+                            return { voice: voice, notes: stNotes, ticks: stTicks };
                         } catch (e) {
-                            console.warn('Treble render error measure ' + m, e);
+                            console.error('Voice creation failed', e);
+                            return { voice: null, notes: [], ticks: [] };
                         }
                     }
 
-                    // Render bass chords
-                    const bassTicks = Object.keys(mNotes.bass).sort((a, b) => a - b);
-                    if (bassTicks.length > 0) {
-                        try {
-                            const bassVexNotes = bassTicks.map(tick => {
-                                const notesAtTick = mNotes.bass[tick];
-                                const keys = notesAtTick.map(n => n.vexNote);
-                                const staveNote = new VF.StaveNote({
-                                    clef: 'bass',
-                                    keys: keys,
-                                    duration: 'q'
-                                });
-                                notesAtTick.forEach((n, i) => {
-                                    if (n.vexNote.includes('#')) {
-                                        staveNote.addModifier(new VF.Accidental('#'), i);
-                                    }
-                                });
-                                return staveNote;
-                            });
+                    const trebleRes = buildVoice('treble', mNotes.treble);
+                    const bassRes = buildVoice('bass', mNotes.bass);
 
-                            const voice = new VF.Voice({ num_beats: bassVexNotes.length, beat_value: 4 });
-                            voice.setStrict(false);
-                            voice.addTickables(bassVexNotes);
-                            new VF.Formatter().joinVoices([voice]).format([voice], STAFF_WIDTH - 60);
-                            voice.draw(staffContext, bassStave);
-                        } catch (e) {
-                            console.warn('Bass render error measure ' + m, e);
+                    const voices = [];
+                    if (trebleRes.voice) voices.push(trebleRes.voice);
+                    if (bassRes.voice) voices.push(bassRes.voice);
+
+                    if (voices.length > 0) {
+                        try {
+                            const formatter = new VF.Formatter();
+                            formatter.joinVoices(voices).format(voices, STAFF_WIDTH - 60);
+
+                            if (trebleRes.voice) trebleRes.voice.draw(staffContext, trebleStave);
+                            if (bassRes.voice) bassRes.voice.draw(staffContext, bassStave);
+
+                            // Capture positions
+                            [trebleRes, bassRes].forEach(res => {
+                                if (res.notes) {
+                                    res.notes.forEach((note, idx) => {
+                                        try {
+                                            const x = note.getAbsoluteX();
+                                            if (!isNaN(x)) noteTickMap.push({ tick: res.ticks[idx], x: x });
+                                        } catch (e) { }
+                                    });
+                                }
+                            });
+                        } catch (err) {
+                            console.warn('Formatting error measure ' + m, err);
                         }
                     }
                 }
@@ -1976,6 +2032,41 @@
             // Refs for playhead
             staffPlayhead = document.getElementById('staff-playhead-v2');
             if (staffPlayhead) staffPlayhead.style.display = 'block';
+
+            // Deduplicate and Sort Map by Tick
+            noteTickMap.sort((a, b) => a.tick - b.tick);
+
+            const filteredMap = [];
+            if (noteTickMap.length > 0) {
+                let current = { ...noteTickMap[0] };
+                let count = 1;
+                for (let i = 1; i < noteTickMap.length; i++) {
+                    if (noteTickMap[i].tick === current.tick) {
+                        current.x += noteTickMap[i].x;
+                        count++;
+                    } else {
+                        current.x /= count;
+                        filteredMap.push(current);
+                        current = { ...noteTickMap[i] };
+                        count = 1;
+                    }
+                }
+                current.x /= count;
+                filteredMap.push(current);
+            }
+            noteTickMap = filteredMap;
+
+            // Ensure start anchor is present if not already matched
+            if (noteTickMap.length === 0 || noteTickMap[0].tick > 0) {
+                noteTickMap.unshift({ tick: 0, x: 60 });
+            }
+
+            // End-point anchor
+            if (noteTickMap[noteTickMap.length - 1].tick < player.totalTicks) {
+                noteTickMap.push({ tick: player.totalTicks, x: totalWidth });
+            }
+
+            console.log(`Staff mapping complete. Points: ${noteTickMap.length}`);
 
             // Initial loop bars update
             updateStaffLoopBars();
@@ -2004,27 +2095,51 @@
             brace.setContext(context).draw();
         }
 
+        // Helper to convert tick to staff X using mapping
+        function tickToStaffX(tick) {
+            if (isNaN(tick)) return 60;
+            if (!player || player.totalTicks <= 0 || !noteTickMap || noteTickMap.length < 2) {
+                // Fallback to linear
+                const ticksPerMeasure = (player && player.division) ? (player.division * 4) : 1920;
+                return 60 + (tick / ticksPerMeasure) * STAFF_WIDTH;
+            }
+
+            if (tick <= noteTickMap[0].tick) return noteTickMap[0].x;
+            if (tick >= noteTickMap[noteTickMap.length - 1].tick) return noteTickMap[noteTickMap.length - 1].x;
+
+            // Find interval
+            for (let i = 0; i < noteTickMap.length - 1; i++) {
+                if (tick >= noteTickMap[i].tick && tick <= noteTickMap[i + 1].tick) {
+                    const p1 = noteTickMap[i];
+                    const p2 = noteTickMap[i + 1];
+                    const range = p2.tick - p1.tick;
+                    if (range > 0) {
+                        const pct = (tick - p1.tick) / range;
+                        return p1.x + pct * (p2.x - p1.x);
+                    }
+                    return p1.x;
+                }
+            }
+            return 60;
+        }
+
         // Update loop bars on staff
         function updateStaffLoopBars() {
             if (!isStaffView || !player || player.totalTicks <= 0) return;
 
-            const ticksPerMeasure = player.division * 4;
-
             if (loopStartTick !== null) {
-                const startPos = 60 + (loopStartTick / ticksPerMeasure) * STAFF_WIDTH;
+                const startPos = tickToStaffX(loopStartTick);
                 staffLoopStart.style.left = startPos + 'px';
                 staffLoopStart.style.display = 'block';
-                // Move with scroll area
                 staffLoopStart.style.transform = `translateX(${lastStaffScrollX}px)`;
             } else {
                 staffLoopStart.style.display = 'none';
             }
 
             if (loopEndTick !== null) {
-                const endPos = 60 + (loopEndTick / ticksPerMeasure) * STAFF_WIDTH;
+                const endPos = tickToStaffX(loopEndTick);
                 staffLoopEnd.style.left = endPos + 'px';
                 staffLoopEnd.style.display = 'block';
-                // Move with scroll area
                 staffLoopEnd.style.transform = `translateX(${lastStaffScrollX}px)`;
             } else {
                 staffLoopEnd.style.display = 'none';
@@ -2036,9 +2151,14 @@
         function updateStaffPlayhead() {
             if (!isStaffView || !player || player.totalTicks <= 0) return;
 
-            const ticksPerMeasure = player.division * 4;
-            const currentMeasure = player.tick / ticksPerMeasure;
-            const xPos = 60 + currentMeasure * STAFF_WIDTH;
+            // Use our helper for consistent coordinate mapping
+            const xPos = tickToStaffX(player.tick);
+
+            // Debug display
+            const debugStatus = document.getElementById('debug-status');
+            if (debugStatus) {
+                debugStatus.innerText = `T:${Math.round(player.tick)} X:${Math.round(xPos)} P:${noteTickMap ? noteTickMap.length : 0}`;
+            }
 
             // In centered mode, the playhead stays at centerX
             const containerWidth = staffContainer.clientWidth;
@@ -2126,11 +2246,38 @@
             const actualStaffX = relativeX - lastStaffScrollX;
 
             // Convert staff X position to ticks
-            // xOffset = 60 + (tick / ticksPerMeasure) * STAFF_WIDTH
-            // Solving for tick: tick = ((xOffset - 60) / STAFF_WIDTH) * ticksPerMeasure
-            const tick = ((actualStaffX - 60) / STAFF_WIDTH) * ticksPerMeasure;
+            // Convert staff X position to ticks using Inverse Map Lookup
+            // Find closest interval in noteTickMap
+            // Simple approach: find closest X
+            let bestTick = 0;
+            let minDist = Infinity;
 
-            return Math.max(0, Math.min(player.totalTicks, tick));
+            // Or better: Inverse interpolation
+            // Find segment where x is between p1.x and p2.x
+            // Since x is monotonic (mostly), we can scan
+
+            if (noteTickMap.length < 2) return 0; // fallback
+
+            for (let i = 0; i < noteTickMap.length - 1; i++) {
+                const p1 = noteTickMap[i];
+                const p2 = noteTickMap[i + 1];
+
+                // Allow some slop or perfect match
+                if (actualStaffX >= p1.x && actualStaffX <= p2.x) {
+                    const rangeX = p2.x - p1.x;
+                    if (rangeX > 0) {
+                        const pct = (actualStaffX - p1.x) / rangeX;
+                        const tickRange = p2.tick - p1.tick;
+                        return p1.tick + pct * tickRange;
+                    }
+                }
+            }
+
+            // If out of bounds
+            if (actualStaffX < noteTickMap[0].x) return 0;
+            if (actualStaffX > noteTickMap[noteTickMap.length - 1].x) return player.totalTicks;
+
+            return 0; // Should be covered
         }
 
         staffLoopStart.addEventListener('pointerdown', (e) => {
