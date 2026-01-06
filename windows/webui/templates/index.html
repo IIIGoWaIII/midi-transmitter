@@ -927,6 +927,71 @@
         let pendingNotes = new Set();
         let isUserSeeking = false;
         let lastSeekTime = 0;
+        let currentKeySignature = 'C'; // Default to C Major
+
+        const keyMap = {
+            '0': { '0': 'C', '1': 'Am' },
+            '1': { '0': 'G', '1': 'Em' },
+            '2': { '0': 'D', '1': 'Bm' },
+            '3': { '0': 'A', '1': 'F#m' },
+            '4': { '0': 'E', '1': 'C#m' },
+            '5': { '0': 'B', '1': 'G#m' },
+            '6': { '0': 'F#', '1': 'D#m' },
+            '7': { '0': 'C#', '1': 'A#m' },
+            '-1': { '0': 'F', '1': 'Dm' },
+            '-2': { '0': 'Bb', '1': 'Gm' },
+            '-3': { '0': 'Eb', '1': 'Cm' },
+            '-4': { '0': 'Ab', '1': 'Fm' },
+            '-5': { '0': 'Db', '1': 'Bbm' },
+            '-6': { '0': 'Gb', '1': 'Ebm' },
+            '-7': { '0': 'Cb', '1': 'Abm' }
+        };
+
+        const KEY_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+        function detectKeySignature(notes) {
+            if (!notes || notes.length === 0) return 'C';
+
+            const pitchCounts = new Array(12).fill(0);
+            notes.forEach(n => {
+                pitchCounts[n.note % 12]++;
+            });
+
+            // Major scale intervals: 0, 2, 4, 5, 7, 9, 11
+            const majorProfile = [1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1];
+            // Natural Minor scale intervals: 0, 2, 3, 5, 7, 8, 10
+            const minorProfile = [1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0];
+
+            let bestKey = 'C';
+            let maxScore = -1;
+
+            for (let root = 0; root < 12; root++) {
+                // Score Major
+                let scoreMaj = 0;
+                for (let i = 0; i < 12; i++) {
+                    if (majorProfile[i]) scoreMaj += pitchCounts[(root + i) % 12];
+                }
+                if (scoreMaj > maxScore) {
+                    maxScore = scoreMaj;
+                    bestKey = KEY_NAMES[root];
+                }
+
+                // Score Minor
+                let scoreMin = 0;
+                for (let i = 0; i < 12; i++) {
+                    if (minorProfile[i]) scoreMin += pitchCounts[(root + i) % 12];
+                }
+                if (scoreMin > maxScore) {
+                    maxScore = scoreMin;
+                    bestKey = KEY_NAMES[root] + 'm';
+                }
+            }
+
+            // Normalization for VexFlow (G#m -> Abm etc if needed, but VexFlow is flexible)
+            // Some specific mappings to avoid weird MIDI labels
+            const cleanup = { 'A#': 'Bb', 'D#': 'Eb', 'G#': 'Ab', 'C#': 'Db', 'F#': 'Gb', 'A#m': 'Bbm', 'D#m': 'Ebm', 'G#m': 'Abm', 'C#m': 'C#m', 'F#m': 'F#m' };
+            return cleanup[bestKey] || bestKey;
+        }
 
         const pendingNotesDisplay = document.getElementById('pending-notes-display');
 
@@ -1608,6 +1673,21 @@
             });
             console.log(`MIDI Loaded. Player Ticks: ${player.totalTicks}, Manual Max: ${maxTick}`);
 
+            // Extract Key Signature
+            currentKeySignature = null;
+            for (const track of player.events) {
+                const keyEvent = track.find(e => e.name === 'Key Signature');
+                if (keyEvent) {
+                    const k = keyEvent.key;
+                    const s = keyEvent.scale;
+                    if (keyMap[k] && keyMap[k][s]) {
+                        currentKeySignature = keyMap[k][s];
+                        console.log(`Detected MIDI Key Signature: ${currentKeySignature}`);
+                        break;
+                    }
+                }
+            }
+
             // Fix potential truncation
             if (maxTick > player.totalTicks) {
                 console.warn("Correcting totalTicks!");
@@ -1643,6 +1723,13 @@
 
             // Correct and Initialize loop points to full song
             if (maxTick > player.totalTicks) player.totalTicks = maxTick;
+
+            // Heuristic Key Detection if missing
+            if (!currentKeySignature) {
+                currentKeySignature = detectKeySignature(fallingNotes);
+                console.log(`Heuristic Key Detection: ${currentKeySignature}`);
+            }
+
             loopStartTick = 0;
             loopEndTick = player.totalTicks;
             console.log(`MIDI Initialized. Ticks: ${player.totalTicks}, Loop End: ${loopEndTick}`);
@@ -1913,11 +2000,20 @@
             for (let m = 0; m < totalMeasures; m++) {
                 const xOffset = 60 + m * STAFF_WIDTH;
                 const trebleStave = new VF.Stave(xOffset, 40, STAFF_WIDTH - 10);
-                if (m === 0) trebleStave.addClef('treble').addTimeSignature('4/4');
+                if (m === 0) {
+                    trebleStave.addClef('treble').addTimeSignature('4/4');
+                    trebleStave.addKeySignature(currentKeySignature);
+                }
+                // Add bold/double barline at end of measures
+                trebleStave.setEndBarType(VF.Barline.type.DOUBLE);
                 trebleStave.setContext(staffContext).draw();
 
                 const bassStave = new VF.Stave(xOffset, 200, STAFF_WIDTH - 10);
-                if (m === 0) bassStave.addClef('bass').addTimeSignature('4/4');
+                if (m === 0) {
+                    bassStave.addClef('bass').addTimeSignature('4/4');
+                    bassStave.addKeySignature(currentKeySignature);
+                }
+                bassStave.setEndBarType(VF.Barline.type.DOUBLE);
                 bassStave.setContext(staffContext).draw();
 
                 if (m === 0) {
@@ -2006,7 +2102,10 @@
                                 const durString = getVexDuration(avgDur, midiDiv);
                                 const keys = chord.map(n => n.vexNote);
                                 const staveNote = new VF.StaveNote({ clef: clef, keys: keys, duration: durString });
-                                chord.forEach((n, i) => { if (n.vexNote.includes('#')) staveNote.addModifier(new VF.Accidental('#'), i); });
+                                chord.forEach((n, i) => {
+                                    if (n.vexNote.includes('#')) staveNote.addModifier(new VF.Accidental('#'), i);
+                                    else if (n.vexNote.includes('b')) staveNote.addModifier(new VF.Accidental('b'), i);
+                                });
 
                                 const noteTicks = 10;
                                 if (typeof staveNote.setTicks === 'function') staveNote.setTicks(noteTicks);
@@ -2046,8 +2145,15 @@
                             // Every bar has a right-side margin/safety (60px).
                             // If we use the same 240px for both, the first bar's notes are squished into less space.
                             // We need to reduce the format width for the first bar to match the actual note area.
-                            const formatWidth = (m === 0) ? (STAFF_WIDTH - 120) : (STAFF_WIDTH - 60);
+                            const formatWidth = (m === 0) ? (STAFF_WIDTH - 140) : (STAFF_WIDTH - 60);
                             formatter.format(allVoices, formatWidth);
+
+                            // Apply key signature to handle accidentals automatically
+                            try {
+                                VF.Accidental.applyPass(allVoices, new VF.KeySignature(currentKeySignature));
+                            } catch (e) {
+                                console.warn('Accidental pass error:', e);
+                            }
 
                             layerResults.forEach(res => {
                                 res.voice.draw(staffContext, res.clef === 'treble' ? trebleStave : bassStave);
@@ -2117,11 +2223,11 @@
             const context = clefRenderer.getContext();
 
             const trebleStave = new VF.Stave(0, 40, 80);
-            trebleStave.addClef('treble').addTimeSignature('4/4');
+            trebleStave.addClef('treble').addTimeSignature('4/4').addKeySignature(currentKeySignature);
             trebleStave.setContext(context).draw();
 
             const bassStave = new VF.Stave(0, 200, 80);
-            bassStave.addClef('bass').addTimeSignature('4/4');
+            bassStave.addClef('bass').addTimeSignature('4/4').addKeySignature(currentKeySignature);
             bassStave.setContext(context).draw();
 
             const brace = new VF.StaveConnector(trebleStave, bassStave);
