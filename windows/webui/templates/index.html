@@ -680,17 +680,30 @@
             display: none;
         }
 
-        /* Staff Loop Bars */
+        /* Staff Loop Bars - Draggable */
         .staff-loop-bar {
             position: absolute;
             top: 20px;
             bottom: 30px;
-            width: 4px;
-            background: rgba(255, 165, 0, 0.6);
+            width: 6px;
+            background: rgba(255, 165, 0, 0.8);
             border: 1px solid #ffaa00;
-            z-index: 15;
-            pointer-events: none;
-            border-radius: 2px;
+            z-index: 30;
+            pointer-events: auto;
+            /* Enable dragging */
+            border-radius: 3px;
+            cursor: ew-resize;
+            transition: background 0.15s, box-shadow 0.15s;
+        }
+
+        .staff-loop-bar:hover {
+            background: #ffcc00;
+            box-shadow: 0 0 12px rgba(255, 165, 0, 0.8);
+        }
+
+        .staff-loop-bar.dragging {
+            background: #ff8800;
+            box-shadow: 0 0 20px rgba(255, 136, 0, 1);
         }
 
         /* View toggle active state */
@@ -2093,6 +2106,71 @@
                 setTimeout(renderStaffNotation, 100);
             }
         };
+
+        // ---------------------------------------------------------
+        // Staff Loop Bar Dragging
+        // ---------------------------------------------------------
+        let staffDragHandle = null;
+
+        function screenToStaffTick(clientX) {
+            if (!player || player.totalTicks <= 0) return 0;
+
+            const ticksPerMeasure = player.division * 4;
+            const containerRect = staffContainer.getBoundingClientRect();
+
+            // Get the screen X relative to the container
+            const relativeX = clientX - containerRect.left;
+
+            // Account for our current scroll offset
+            const actualStaffX = relativeX - lastStaffScrollX;
+
+            // Convert staff X position to ticks
+            // xOffset = 60 + (tick / ticksPerMeasure) * STAFF_WIDTH
+            // Solving for tick: tick = ((xOffset - 60) / STAFF_WIDTH) * ticksPerMeasure
+            const tick = ((actualStaffX - 60) / STAFF_WIDTH) * ticksPerMeasure;
+
+            return Math.max(0, Math.min(player.totalTicks, tick));
+        }
+
+        staffLoopStart.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            staffDragHandle = 'start';
+            staffLoopStart.classList.add('dragging');
+            staffLoopStart.setPointerCapture(e.pointerId);
+        });
+
+        staffLoopEnd.addEventListener('pointerdown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            staffDragHandle = 'end';
+            staffLoopEnd.classList.add('dragging');
+            staffLoopEnd.setPointerCapture(e.pointerId);
+        });
+
+        staffContainer.addEventListener('pointermove', (e) => {
+            if (!staffDragHandle) return;
+
+            const tick = screenToStaffTick(e.clientX);
+
+            if (staffDragHandle === 'start') {
+                loopStartTick = Math.min(tick, loopEndTick !== null ? loopEndTick - 100 : player.totalTicks);
+            } else if (staffDragHandle === 'end') {
+                loopEndTick = Math.max(tick, loopStartTick !== null ? loopStartTick + 100 : 0);
+            }
+
+            // Sync with progress bar UI
+            updateLoopUI();
+            updateStaffLoopBars();
+        });
+
+        window.addEventListener('pointerup', (e) => {
+            if (staffDragHandle) {
+                staffLoopStart.classList.remove('dragging');
+                staffLoopEnd.classList.remove('dragging');
+                staffDragHandle = null;
+            }
+        });
     </script>
 </body>
 
